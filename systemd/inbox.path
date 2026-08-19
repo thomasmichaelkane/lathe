@@ -1,0 +1,19 @@
+# Watches /srv/inbox for manual drops and fetchd approvals.
+#
+# Path units fire on the FIRST change, not on quiescence, so anything landing
+# here must already be complete. That is why uploads stage in
+# /srv/staging/incoming and are moved in atomically — see docs/fetch-contract.md
+# and §6.5 of docs/plan.md.
+#
+# inbox-import.sh still waits for the directory to settle before importing, as
+# a safety net for the times something is copied in directly.
+
+[Unit]
+Description=Watch /srv/inbox for new music
+
+[Path]
+PathChanged=/srv/inbox
+Unit=inbox-import.service
+
+[Install]
+WantedBy=multi-user.target

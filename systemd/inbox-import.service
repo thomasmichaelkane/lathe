@@ -1,0 +1,17 @@
+# Imports /srv/inbox into the library. Triggered by inbox.path.
+#
+# Nice/idle scheduling so a bulk import of a few hundred albums never makes
+# playback stutter — same reasoning as autorip@.service.
+
+[Unit]
+Description=Import /srv/inbox into the music library
+
+[Service]
+Type=oneshot
+User=music
+Group=music
+ExecStart=/usr/local/bin/inbox-import.sh
+# A 30-album import with ReplayGain and art fetching is slow. Allow hours.
+TimeoutStartSec=21600
+Nice=10
+IOSchedulingClass=idle

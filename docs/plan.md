@@ -105,6 +105,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   staging/
     rips/           # abcde output lands here
     fetched/        # farfetchd drops here, awaiting human review (see docs/fetch-contract.md)
+    incoming/       # rsync landing area for uploads. UNWATCHED — see §6.5
   quarantine/       # beets could not confidently match these
   inbox/            # manual drops: Bandcamp, purchases, existing collection
   config/
@@ -329,7 +330,7 @@ At the end of `autorip.sh`:
 | Entry | Lands in | Reviewed before import? |
 |---|---|---|
 | Optical drive | `/srv/staging/rips/` | No — disc ID is trustworthy |
-| Manual drop | `/srv/inbox/` | No — you put it there deliberately |
+| Upload from a computer | `/srv/inbox/` via `/srv/staging/incoming/` | No — you sent it deliberately |
 | `farfetchd` | `/srv/staging/fetched/` | **Yes** — confirm it fetched the right release |
 
 The third is the only one with a review gate, because it's the only one where
@@ -338,6 +339,48 @@ something automated *chose* what to retrieve. Approving moves the directory to
 existing path unit takes over. No second pipeline, no new systemd units.
 
 See `docs/fetch-contract.md` for the full interface.
+
+#### Uploading from a computer
+
+The common case — you found 30 albums on a laptop and want them on the server.
+
+```bash
+./lathe/ingest/push-music.sh ~/albums/          # runs on the laptop
+```
+
+rsync rather than scp, because it resumes; a dropped connection partway
+through 30GB shouldn't mean starting over. For a genuinely large one-time
+migration, plugging the drive into the Pi and copying locally beats any
+network transfer.
+
+**Two stages, and the reason matters.** `push-music.sh` rsyncs into
+`/srv/staging/incoming/`, then moves into `/srv/inbox/`:
+
+> **A systemd path unit fires on the first change, not on quiescence.**
+> rsync-ing 30 albums straight into `/srv/inbox/` would trigger the import
+> while files were still arriving — beets imports a three-track version of a
+> nine-track album, or moves files out from under rsync mid-write. A single
+> album copies fast enough that you'd probably never see this; a bulk upload
+> hits it every time.
+
+`/srv/staging/incoming/` is not watched, and both directories are on the same
+filesystem, so the `mv` is atomic and albums appear in the inbox complete or
+not at all. Same principle as `farfetchd` writing `fetch.json` last.
+
+`inbox-import.sh` **also** waits for the inbox to go quiet for two minutes
+before importing, as a safety net for the times something gets copied in
+directly. Belt and braces, because the failure is silent and costs a re-file.
+
+**Ownership.** You upload as `tom`; beets runs as `music` and needs to *move
+and delete* those files, not just read them. `push-music.sh` passes
+`--chmod=Dg+rwxs,Fg+rw` so they arrive group-writable, which requires `tom` to
+be in the `music` group and the staging directories to be setgid (Phase 0).
+Without this the import fails on permissions.
+
+**Set expectations:** albums off a computer are messier than CD rips — mixed
+formats, embedded art, junk files, tags from whatever ripped them years ago.
+With `strong_rec_thresh: 0.04` expect a substantial quarantine pile on the
+first bulk import. That's the config working, not failing.
 
 ### 6.6 Library hygiene
 
@@ -716,6 +759,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
 - Create `music` user (uid 1001), create `/srv` tree, mount library drive by UUID in `/etc/fstab`
+- **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
 - **Done when:** you can SSH in over Tailscale from your phone's hotspot
 
@@ -737,7 +781,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - `autorip.sh`, the systemd template unit, the udev rule
 - Per-disc logging, error detection, quarantine sweep
 - ntfy notifications, auto-eject, Navidrome rescan poke
-- `/srv/inbox/` path unit for non-CD ingest
+- `/srv/inbox/` path unit + `inbox-import.sh` for non-CD ingest (settle wait, quarantine sweep)
 - `lint.py` (§6.6) + nightly timer
 - **Done when:** insert disc, walk away, get a phone notification, album is in the library — and the linter reports zero violations
 
@@ -781,6 +825,8 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - **A song result in search must never become a standalone queue.** It's the one spot where the philosophy is easy to violate by accident.
 - **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
 - **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
+- **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
+- **`find -newermt "-120 seconds"` is a GNU extension.** Other `find` implementations reject it, and if the error is suppressed the result reads as "nothing changed recently" — so a settle-check built on it silently concludes the copy has finished and imports mid-write. Use a reference file with POSIX `-newer`, and don't suppress the error.
 - **Confirm RNTP v5's licence and Expo SDK support before scaffolding the app.** The fallback is an incompatible API, so discovering a problem late means rewriting the playback layer.
 
 ---
