@@ -104,6 +104,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   music/            # THE LIBRARY. Navidrome mounts this read-only.
   staging/
     rips/           # abcde output lands here
+    fetched/        # farfetchd drops here, awaiting human review (see docs/fetch-contract.md)
   quarantine/       # beets could not confidently match these
   inbox/            # manual drops: Bandcamp, purchases, existing collection
   config/
@@ -321,7 +322,22 @@ At the end of `autorip.sh`:
 
 ### 6.5 The non-CD path
 
-`/srv/inbox/` is watched by a systemd path unit. Anything dropped there (Bandcamp downloads, existing collection, purchases) gets the same beets import with the same quarantine behaviour. One ingest pipeline, two entry points.
+`/srv/inbox/` is watched by a systemd path unit. Anything dropped there (Bandcamp downloads, existing collection, purchases) gets the same beets import with the same quarantine behaviour.
+
+**One ingest pipeline, three entry points:**
+
+| Entry | Lands in | Reviewed before import? |
+|---|---|---|
+| Optical drive | `/srv/staging/rips/` | No — disc ID is trustworthy |
+| Manual drop | `/srv/inbox/` | No — you put it there deliberately |
+| `farfetchd` | `/srv/staging/fetched/` | **Yes** — confirm it fetched the right release |
+
+The third is the only one with a review gate, because it's the only one where
+something automated *chose* what to retrieve. Approving moves the directory to
+`/srv/inbox/`, at which point it's indistinguishable from a manual drop and the
+existing path unit takes over. No second pipeline, no new systemd units.
+
+See `docs/fetch-contract.md` for the full interface.
 
 ### 6.6 Library hygiene
 
@@ -584,6 +600,9 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 | GET | `/events` | SSE stream of rip progress |
 | GET | `/quarantine` | Albums beets couldn't match, with candidate matches |
 | POST | `/quarantine/{id}/resolve` | Apply a chosen MusicBrainz release ID, re-run beets import |
+| GET | `/fetched` | Releases `farfetchd` retrieved, awaiting review |
+| POST | `/fetched/{id}/approve` | Move to `/srv/inbox/` for the normal beets import |
+| POST | `/fetched/{id}/reject` | Delete the directory |
 | GET | `/library/violations` | Lint results from §6.6 — junk files, artwork problems, metadata gaps |
 | POST | `/library/lint` | Run the linter now |
 | POST | `/library/fix` | Apply only the safe auto-fixes (junk deletion, empty folders) |
@@ -787,7 +806,8 @@ Worth being precise about this, because it prevents over-splitting:
 |---|---|
 | Ingest pipeline | Event-triggered batch job (udev → systemd → script) |
 | Linter | Scheduled batch job |
-| `libraryd` API | The only long-running HTTP service |
+| `libraryd` API | The only long-running HTTP service in this repo |
+| `fetchd` | A second long-running service, in the separate `farfetchd` repo |
 | Dashboard | A frontend served by `libraryd` |
 | Deadwax | An Android client |
 | Subsonic client | A library inside Deadwax |
@@ -819,6 +839,16 @@ All Python, one deployment target, versioned together.
 > `lathe` is the cutting lathe that carves a master lacquer — including the run-out groove the app is named after. It reads as machinery rather than product, which is the right signal for a repo that is mostly config, systemd units, and personal paths rather than anything installable by a stranger.
 
 **`deadwax`** — the Android app. Different language, different toolchain, different release cadence, and the only thing that might ever be published.
+
+**`farfetchd`** — fetches releases from a site that hosts them for free download, drops them in `/srv/staging/fetched/` for review. **Private, permanently.**
+
+Split out for the same reason the app is: a different publication future. `lathe` could plausibly be published with paths scrubbed; this one never will be. Deciding that per-repo rather than per-directory is the whole argument from the bottom of this section.
+
+It earns the split cheaply because it integrates the same way everything else here does — through the filesystem, not HTTP. It writes one directory and a sidecar JSON; `libraryd` reads them. It never reads beets' database, never queries Navidrome, never touches `/srv/music`. One-directional coupling means either repo can be rewritten without touching the other. It also ships its own compose file and mounts only `/srv/staging/fetched`, so `lathe` stays deployable on its own rather than depending on a build path into a sibling private repo.
+
+The daemon inside it is `fetchd` — boring, per the convention below. The repo carries the joke; the thing you read in `systemctl status` does not.
+
+Interface spec: `docs/fetch-contract.md`.
 
 **`opensubsonic-client`** — extracted from the app **later**, once it stops changing daily. Give it a generic name rather than a Deadwax-branded one so it's useful to others.
 
