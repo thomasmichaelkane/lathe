@@ -14,6 +14,9 @@ venv/
 
 # Beets
 library.db
+# BEETSDIR points at ingest/beets during local tuning, so beets drops its
+# incremental-import state file in there. Not deployment config.
+ingest/beets/state.pickle
 
 # Logs
 *.log

@@ -42,7 +42,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Desktop client | **Navidrome's built-in web UI** | Free. Build nothing. |
 | App v1 scope | Streaming only, with local metadata cache | Offline downloads deferred to v2 (see §9) |
 | Custom API | **FastAPI**, Python | Same language as the rip scripts; small surface |
-| Scrobbling | **ListenBrainz** | Open, no account lock-in; Navidrome supports it natively |
+| Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively. Deadwax implements nothing — see §9. |
 | **App philosophy** | **Album/EP only.** No playlists, no autoplay, no track shuffle | The queue *is* the album. Collapses the fiddliest part of any player. |
 | Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
 | Multi-disc releases | **One release per disc**, merge endpoint later | Preserves the one-folder rule; merging is a v2 nicety |
@@ -109,13 +109,15 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   config/
     navidrome/      # SQLite DB, cache
     beets/          # config.yaml, library.db
-    ripd/           # custom service config
+    libraryd/       # custom service config
   logs/
     rips/           # one log per disc, named by MusicBrainz disc ID
     beets-import.log
 ```
 
 **Rule: nothing writes to `/srv/music` except beets.** This is what keeps the library clean. Everything else stages.
+
+This rule has no exceptions, including the initial migration. The existing collection enters through `/srv/inbox/` and is imported by beets like anything else — it is never rsynced straight into `/srv/music`. Copying it in directly would leave those albums absent from beets' `library.db`, which means `incremental: yes` skips them forever, they never conform to the §6.3 path templates, and the library is inconsistent from day one. See Phase 1 in §11.
 
 Create a dedicated `music` user (uid 1001) owning all of `/srv`. Run containers and the rip service as that user.
 
@@ -146,9 +148,9 @@ services:
       - /srv/music:/music:ro
       - /srv/config/navidrome:/data
 
-  ripd:
-    build: ./ripd
-    container_name: ripd
+  libraryd:
+    build: ./libraryd
+    container_name: libraryd
     restart: unless-stopped
     user: "1001:1001"
     ports:
@@ -167,6 +169,7 @@ Deliberately **no reverse proxy in v1** — Tailscale handles access and there's
 - **Transcoding:** enable Opus 128k as a downsample option. Configure the Android app to request the original FLAC on WiFi and 128k Opus on cellular.
 - **ListenBrainz:** add your token under user settings.
 - **Scan schedule:** every 6h plus the filesystem watcher. The rip pipeline also pokes a rescan directly when it finishes, so new discs show up in seconds, not hours.
+- **Then turn `ND_ENABLETRANSCODINGCONFIG` back off.** That flag exists to let the web UI define transcoding *commands*, which is effectively remote command execution by design. It's acceptable on a single-user tailnet, but it only needs to be on for the few minutes it takes to configure Opus. Set it to `"false"` afterwards and redeploy.
 
 ---
 
@@ -250,7 +253,10 @@ import:
   log: /srv/logs/beets-import.log
 
 match:
-  strong_rec_thresh: 0.10   # only auto-accept high-confidence matches
+  # DISTANCE threshold, not a confidence score: beets auto-accepts matches
+  # scoring BELOW this. Lower is stricter. 0.04 is the beets default; do not
+  # raise it thinking you are tightening the filter — you are loosening it.
+  strong_rec_thresh: 0.04
   max_rec:
     missing_tracks: low
     unmatched_tracks: low
@@ -258,8 +264,11 @@ match:
 plugins: fetchart replaygain scrub lastgenre missing edit inline
 
 # Used below to split multi-disc sets into one release per disc.
+# Returns '' rather than 0 for single-disc releases: %if{} treats the empty
+# string as unambiguously false, whereas how it coerces the string "0" is a
+# beets-version detail you do not want the library layout depending on.
 item_fields:
-  multidisc: 1 if disctotal > 1 else 0
+  multidisc: 1 if disctotal > 1 else ''
 
 paths:
   default: $albumartist/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
@@ -287,10 +296,18 @@ scrub:
 1. **One release = one folder.** Never nested, never split.
 2. **A folder contains audio tracks and exactly one `cover.jpg`.** Nothing else.
 3. **No embedded artwork.** `embedart` is deliberately absent from the plugin list. The image lives once, on disk, and Navidrome serves it via `getCoverArt`.
-4. **Multi-disc sets become one release per disc** — `Album (Disc 1)`, `Album (Disc 2)`. This preserves rule 1 at the cost of splitting a conceptual release; `ripd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
+4. **Multi-disc sets become one release per disc** — `Album (Disc 1)`, `Album (Disc 2)`. This preserves rule 1 at the cost of splitting a conceptual release; `libraryd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
 5. **Singles are one-track releases**, foldered like everything else.
 
-The `multidisc` field comes from the `inline` plugin — verify the expression evaluates correctly on your beets version before ripping a box set.
+The `multidisc` field comes from the `inline` plugin. **Verified on beets 1.6.0 (2026-08-19)** — the field registers, and rendering `$album%if{$multidisc, (Disc $disc)}` gives:
+
+| `multidisc` | Output |
+|---|---|
+| `1` | `Ghosts I-IV (Disc 2)` |
+| `''` | `The Slip` |
+| `0` | `The Slip` |
+
+So both branches behave, the leading space after the comma is preserved (it's what separates title from suffix), and single-disc albums get no suffix. Note `0` also works here — beets' `%if{}` int-coerces its condition — so the `''` in the config is belt-and-braces, not a bug fix. Re-check this if the beets version changes, since the coercion path is an implementation detail rather than a documented guarantee.
 
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
 
@@ -308,7 +325,7 @@ At the end of `autorip.sh`:
 
 ### 6.6 Library hygiene
 
-The rules in §6.3 are only real if something checks them. `lint.py` runs nightly via systemd timer and on demand via `ripd`.
+The rules in §6.3 are only real if something checks them. `lint.py` runs nightly via systemd timer and on demand via `libraryd`.
 
 **Structural checks** — walk every release folder and flag:
 
@@ -334,7 +351,7 @@ The rules in §6.3 are only real if something checks them. `lint.py` runs nightl
 
 **Fixable vs. reportable.** Split the output. Deletable junk (`.DS_Store`, empty folders, stray logs) gets a `--fix` flag. Anything involving metadata or artwork is reported only — never let an automated tool rewrite tags unattended.
 
-Output as JSON to `/srv/logs/lint.json`, served by `ripd` at `GET /library/violations` and rendered in the dashboard.
+Output as JSON to `/srv/logs/lint.json`, served by `libraryd` at `GET /library/violations` and rendered in the dashboard.
 
 Related: run `beet fetchart --quiet` periodically to backfill art, and `beet missing` to surface incomplete releases from failed rips.
 
@@ -427,6 +444,13 @@ Alternatives if B2 disappoints: Hetzner Storage Box (cheap, restic over SFTP), r
 
 **Licensing note:** RNTP v5 is commercially licensed but free for personal use. That's this project. If it ever becomes commercial, either pay or fall back to v4 (Apache-2.0, on the `v4` branch, different package name and incompatible API).
 
+> **Verify this before scaffolding, not after.** RNTP is the one dependency with no realistic substitute — background playback, lockscreen and notification controls, Bluetooth buttons, audio focus, and Android Auto are all native Android plumbing that nothing else in the RN ecosystem wraps as completely. Two things must be confirmed current at the moment work starts:
+>
+> 1. **The licence still permits personal use on the terms above.** The fallback is v4, which is a different package with an incompatible API — a rewrite of the playback layer, not a version bump.
+> 2. **v5's Expo config plugin supports the Expo SDK version you're about to scaffold.** If it lags, the choice is pinning to an older SDK or patching the plugin yourself, and it is much cheaper to know that before there are screens on top of it.
+>
+> Ten minutes of reading. Do it as the first action of Phase −1(c) and record the answer here.
+
 ### Auth model
 
 Subsonic uses salted-token auth in query strings. Per request:
@@ -458,6 +482,8 @@ What remains: **choose a record, put it on, listen to it.**
 
 Skip-within-album stays (you're allowed to skip a track on a record). Previous/next move within the current album only, and stop at its edges.
 
+**Starting a second album replaces the first, immediately.** "No queue" means no queue *accumulates* — it does not mean you're locked out of the controls while something is playing. On a turntable you lift the needle and put on the other record; you don't wait for side B to run out. So pressing play on album B while album A is playing stops A and starts B at track 1, with no confirmation prompt and nothing retained. The invariant to hold is that **exactly one release is loaded at any moment**, never zero-plus-a-pending-list. Anything that would make "what plays next" a question the app has to answer is the thing being excluded.
+
 ### Prior art — study before designing
 
 The album-first philosophy is well established, but **only on iOS, and only against Apple Music or local files**. Nobody has built it for Subsonic on Android.
@@ -482,9 +508,10 @@ The gap you're filling is specifically **album-first × Android × OpenSubsonic*
 | Artwork | `getCoverArt` (pass `size` — request thumbnails for the grid) |
 | Playback | `stream` (with `maxBitRate`, `format`) |
 | Favourites | `star`, `unstar`, `getStarred2` |
-| Scrobble | `scrobble` (`submission=false` on start, `true` past 50%) |
 
-**Deliberately unused:** `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`, `getRandomSongs`.
+**Deliberately unused:** `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`, `getRandomSongs`, `scrobble`.
+
+**On `scrobble`:** Navidrome scrobbles to ListenBrainz server-side, off the back of the `stream` requests the app is already making. Deadwax implementing `scrobble` itself would duplicate that, and hand the app a "have we passed 50%?" progress-tracking concern for no gain. Configure the ListenBrainz token in Navidrome (§5) and the app stays ignorant of scrobbling entirely — which is also what `PHILOSOPHY.md` asks for.
 
 `getAlbumList2` gives you every browse axis you need without a single playlist. `albumtype` from MusicBrainz already distinguishes album / EP / single / compilation / live — filter on it for free.
 
@@ -543,9 +570,11 @@ RNTP v5's built-in audio caching is a partial substitute in the meantime — it'
 
 ---
 
-## 10. Custom service (`ripd`)
+## 10. Custom service (`libraryd`)
 
 FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
+
+*(Named `libraryd`, not `ripd` — it covers lint, library operations and stats as well as rips. See §14.)*
 
 | Method | Path | Does |
 |---|---|---|
@@ -578,11 +607,13 @@ Each phase ends in something that works. Stop at any point and you still have a 
 
 Almost everything here is unblocked. Only the rip pipeline genuinely needs the Pi. Do this work on a laptop and it transfers to the Pi verbatim.
 
-**Set up a laptop mirror of the server.** Run Navidrome in Docker locally, pointed at a folder of existing music. Two minutes of work, and it becomes the development target for everything else. Because the app is built against the OpenSubsonic spec rather than Navidrome specifics, developing against a laptop instance is functionally identical to developing against the Pi.
+**a) Set up a laptop mirror of the server — do this first, it unblocks everything else**
 
-**a) Tune beets — highest value, do this first**
+Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes of work, and it becomes the development target for the app, `lint.py`, and `libraryd`. Because the app is built against the OpenSubsonic spec rather than Navidrome specifics, developing against a laptop instance is functionally identical to developing against the Pi.
 
-The fiddliest config in the plan and the one most likely to bite. Install beets locally, point it at a **copy** of existing music (never the original), and iterate until:
+**b) Tune beets — highest value of the real work**
+
+The fiddliest config in the plan and the one most likely to bite. Install beets locally, point it at a **copy** of existing music (never the original — `import.move: yes` physically relocates and renames every file it touches, so a bad template rearranges your actual collection), and iterate until:
 
 - Path templates produce exactly the folder structure in §6.3
 - The `inline` plugin's `multidisc` expression actually evaluates — verify before trusting it
@@ -592,14 +623,46 @@ The fiddliest config in the plan and the one most likely to bite. Install beets 
 
 Discovering a broken template now costs an afternoon. Discovering it after 200 CDs costs a re-file of the entire library.
 
-**b) Validate the app concept before building it**
+**The test harness** lives at `music-server/testdata/`, outside both repos:
+
+```
+testdata/
+  originals/    # pristine master copy. NEVER written to.
+  staging/      # disposable copy; beets consumes this
+  library/      # beets output — check the structure here
+  quarantine/   # what quiet_fallback: skip left behind
+  beets/        # config-test.yaml + library.db
+  logs/
+```
+
+`lathe/ingest/reset-testdata.sh` wipes everything derived and re-copies `originals/` → `staging/`, because `move: yes` means each import consumes its input and you'll run it many times.
+
+**Config layering — use `lathe/ingest/beet-test.sh`, don't call `beet` directly.** The test setup must run the *real* production config so that what gets tuned is what ships. beets layers `$BEETSDIR/config.yaml` as the base with `-c` overlaid on top, so the wrapper sets `BEETSDIR=lathe/ingest/beets` and passes `testdata/beets/config-test.yaml` as the overlay, which replaces only the three paths.
+
+> **beets has no `include:` directive.** It accepts the key, ignores it, and reads nothing — no warning, no error. An earlier draft of this plan assumed otherwise and the test config silently contained *only* the path overrides: no plugins, no path templates, no match thresholds. Verified against beets 1.6.0. `beet-test.sh` asserts `strong_rec_thresh` is present in the merged config and that `directory` points inside `testdata/`, and refuses to run otherwise — the second check exists so a broken overlay can never write into a real music directory.
+
+**What to put in `originals/`** — 8–12 albums chosen for coverage, not volume:
+
+| Case | Tests |
+|---|---|
+| Normal single-disc album, well known | The happy path |
+| **A multi-disc release** | The `multidisc` expression — the #1 flagged risk |
+| Various-artists compilation | The separate `comp` path template |
+| An EP or single | `albumtype`, and the `singleton` path |
+
+Mostly FLAC, since that's the archive format and ReplayGain-via-ffmpeg needs testing on it. NIN's *Ghosts I–IV* (free, FLAC, CC, well-catalogued in MusicBrainz, genuinely multi-disc) and *The Slip* cover the first two cheaply.
+
+Broken cases are **synthesised, not sourced** — strip tags off a copy to exercise `quiet_fallback: skip`, embed art in another to confirm `scrub` removes it, scatter `.cue`/`.nfo`/`Thumbs.db` to give `lint.py` something to find. Synthetic is better: you control exactly what's wrong.
+
+**c) Validate the app concept before building it**
 
 Run the stock clients — Symfonium, Tempo, Substreamer — against local Navidrome for half an hour. Either this confirms the album-only instinct or it saves you from building the wrong thing. Then study Longplay properly and sketch the seven screens.
 
-**c) Start the Android app (Phase 5 work, fully unblocked)**
+**d) Start the Android app (Phase 5 work, fully unblocked)**
 
 The largest single chunk in the plan, and it needs no Pi:
 
+- **First: confirm the RNTP v5 licence terms and Expo SDK support (§9).** Ten minutes, and it gates everything below it.
 - Expo dev build scaffold, RNTP wired up, audio playing at all
 - The Subsonic client module: salted-token auth, `js-md5`, capability detection via `getOpenSubsonicExtensions`
 - SQLite schema + Drizzle, sync logic
@@ -607,26 +670,26 @@ The largest single chunk in the plan, and it needs no Pi:
 
 Populate the test library with a few hundred albums if you can, so pagination and scroll performance assumptions are realistic rather than flattering.
 
-**d) Write `lint.py` (§6.6)**
+**e) Write `lint.py` (§6.6)**
 
 Pure Python over a directory tree, no server dependency. Run it against the current messy library — it will immediately tell you how much cleanup Phase 1 involves.
 
-**e) Scaffold `ripd` against fake data**
+**f) Scaffold `libraryd` against fake data**
 
 The dashboard, quarantine review, and violations view all work off JSON. Only `/eject` and live rip progress need real hardware.
 
-**f) Do the entire backup flow end to end**
+**g) Do the entire backup flow end to end**
 
 Backblaze account, restic repo, back up a small folder, **and do a restore test**. Practising restore at 2GB is the right order of operations; practising at 300GB is not.
 
-**g) Housekeeping**
+**h) Housekeeping**
 
 - Install Tailscale on phone and laptop, get comfortable with it
 - Download the Pi OS Lite 64-bit image
-- Git repos initialised, `.gitignore` in place, licence chosen
-- Settle the §13 open questions — especially offline v1-vs-v2, since it shapes the app you're starting in (c)
+- Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
+- Settle the §13 open questions — offline downloads is **decided: v2**, per `PHILOSOPHY.md`
 
-**Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the library across.
+**Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the collection into `/srv/inbox/` and let beets file it.
 
 **Blocked until hardware:** NVMe boot, the udev rule, `autorip.sh`, `/etc/abcde.conf`, anything touching `/dev/sr0`.
 
@@ -639,8 +702,8 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 
 ### Phase 1 — Serving music
 - `docker compose up` with Navidrome
-- Copy existing music into `/srv/music`
-- Create account, configure transcoding, connect ListenBrainz
+- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it.
+- Create account, configure transcoding, connect ListenBrainz, then turn `ND_ENABLETRANSCODINGCONFIG` back off
 - **Done when:** music plays in a desktop browser and in a stock Subsonic client on your phone over Tailscale
 
 > At this point the system is genuinely useful. Everything after is upgrade.
@@ -671,7 +734,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - Screens 1–7
 - **Done when:** it's the app you reach for instead of the stock client — and nothing in it can queue anything but a release
 
-### Phase 6 — ripd
+### Phase 6 — libraryd
 - FastAPI service, endpoints above
 - Web dashboard: quarantine review, lint violations, rip history
 - **Done when:** you can resolve a bad match from your phone
@@ -697,12 +760,15 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - **Verify the `inline` plugin's `multidisc` expression** before importing a box set, or you'll refile a lot of files twice.
 - **Gapless matters more in an album-only app** than in a normal one, because you'll notice every seam on a continuous record. Test with a live album early.
 - **A song result in search must never become a standalone queue.** It's the one spot where the philosophy is easy to violate by accident.
+- **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
+- **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
+- **Confirm RNTP v5's licence and Expo SDK support before scaffolding the app.** The fallback is an incompatible API, so discovering a problem late means rewriting the playback layer.
 
 ---
 
 ## 13. Still open
 
-- **Offline downloads: v1 or v2?** Planned as v2. Moving it to v1 roughly doubles app scope but makes the app usable on planes and subways from the start.
+- ~~**Offline downloads: v1 or v2?**~~ **Settled: v2**, per `PHILOSOPHY.md`. The local metadata cache still ships in v1, which is the foundation downloads need — so this stays cheap to add later.
 - **Gapless playback.** RNTP v5 has preloading, which gets close. True gapless for continuous albums may need real work — and matters more here than in most players.
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
@@ -766,7 +832,7 @@ A monorepo is also defensible for a solo project and gives you atomic cross-cutt
 
 **Server side: boring and functional.** `autorip`, `lint`, `libraryd`. You will be SSH'd in at 11pm reading `systemctl status autorip` — the name should tell you what broke, not require recalling which metaphor maps to which job. Thematic names for infrastructure are a tax paid forever for a joke enjoyed once.
 
-*(§10 originally called the API service `ripd`. Since it now covers lint, library operations and stats as well as rips, `libraryd` is the more accurate name. Either is fine — pick one and be consistent.)*
+*(§10 originally called the API service `ripd`. Since it covers lint, library operations and stats as well as rips, **`libraryd` is the name — settled**, and used consistently throughout this document, in `docker-compose.yml`, and as the directory in the repo.)*
 
 **App side: Deadwax.** Public-facing, and the name that has to do work.
 
