@@ -872,6 +872,34 @@ Ship a minimal web dashboard on the same service — this is the actual UI for q
 
 Each phase ends in something that works. Stop at any point and you still have a functioning system.
 
+### Getting the repo onto the system paths
+
+Every script in this repo carries a "Deployed to ..." line in its header,
+because almost nothing runs from where it is checked out:
+
+| Repo path | System path |
+|---|---|
+| `ingest/autorip.sh` | `/usr/local/bin/autorip.sh` |
+| `ingest/inbox-import.sh` | `/usr/local/bin/inbox-import.sh` |
+| `ingest/abcde.conf` | `/etc/abcde.conf` |
+| `ingest/beets/config.yaml` | `/srv/config/beets/config.yaml` |
+| `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
+| `systemd/*.service`, `systemd/*.path` | `/etc/systemd/system/` |
+| `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
+| `compose/docker-compose.yml` *(not written yet — §5 holds it inline)* | wherever you run `docker compose` |
+
+Copying these by hand is fine exactly once. After that it is a trap, and a
+quiet one: **edit the repo copy and deploy it, never edit the deployed copy.**
+A hotfix applied directly to `/etc/abcde.conf` at midnight does not fail, it
+works — and from then on the repo describes a system that no longer exists,
+which is worse than having no repo at all. The next `git pull` and re-copy then
+silently reverts the fix.
+
+An `install.sh` that copies the table above, `systemctl daemon-reload`s and
+`udevadm control --reload`s is the obvious fix and is maybe thirty lines.
+Write it in Phase 3, when there is finally more than one file to deploy — and
+make it the *only* way anything reaches a system path.
+
 ### Phase −1 — Before the hardware arrives
 
 Almost everything here is unblocked. Only the rip pipeline genuinely needs the Pi. Do this work on a laptop and it transfers to the Pi verbatim.
@@ -1012,6 +1040,7 @@ drive; the half that does is small and mostly config.
 - `/srv/inbox/` path unit + `inbox-import.sh` **first** — it is the consumer everything else feeds (settle wait, quarantine sweep, ntfy, Navidrome rescan poke)
 - `autorip.sh`, the systemd template unit, the udev rule
 - Per-disc logging, error detection, atomic hand-off into `/srv/inbox/`, auto-eject
+- `install.sh` — copy the repo into the system paths, reload systemd and udev. From here on it is the only way anything gets deployed.
 - Verify the read-error grep patterns in `autorip.sh` against a **deliberately scratched disc**. `autorip-test.sh` stubs the rip, so a pattern that never matches is indistinguishable from a clean rip until a real bad disc proves otherwise.
 - `lint.py` (§6.6) + nightly timer
 - **Done when:** insert disc, walk away, get a phone notification, album is in the library — and the linter reports zero violations
@@ -1056,6 +1085,7 @@ drive; the half that does is small and mostly config.
 - **A song result in search must never become a standalone queue.** It's the one spot where the philosophy is easy to violate by accident.
 - **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
 - **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
+- **Never edit a deployed copy.** `/usr/local/bin/autorip.sh`, `/etc/abcde.conf` and the systemd units are all copies of files in this repo. Editing them in place works, which is the problem: the repo silently stops describing the running system, and the next deploy reverts the fix without warning. Edit here, deploy from here — see §11.
 - **Never let `autorip.sh` run beets itself.** The disc ID makes the match easy and inlining the import is tempting, but it duplicates `inbox-import.sh`'s settle wait, quarantine sweep and cleanup, and leaves two beets invocations to drift apart. Rip, move into `/srv/inbox/`, stop.
 - **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
