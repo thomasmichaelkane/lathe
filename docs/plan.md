@@ -33,9 +33,10 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Deployment | **Docker Compose** | Reproducible, portable to a real NAS later |
 | Rip pipeline | **On the host, not in Docker** | udev + device access in containers is more pain than it's worth |
 | Ripper | **abcde**, paranoia relaxed | "Fast and hands-off" was the stated priority |
+| Rip → library hand-off | **Atomic move into `/srv/inbox/`** | The ripper produces, `inbox-import.sh` consumes. One ingest pipeline, not two — §6.2 |
 | Archive format | **FLAC (-5)** | Lossless master. Transcode on the fly for mobile. |
 | Tagger | **beets**, non-interactive | MusicBrainz matching, art, ReplayGain, consistent naming |
-| Unmatched discs | **Stay in staging → quarantine** | Never let a bad match pollute the library |
+| Unmatched albums | **Left in the inbox → swept to quarantine** | Never let a bad match pollute the library |
 | Remote access | **Tailscale** | No open ports, 10-minute setup, works on Android |
 | Backups | **restic → Backblaze B2**, cloud-only at first | Local drive deferred; adding one later is ~20 min of work |
 | Android app | **Expo dev build + RNTP v5 (`@rntp/player`)** | Handles background audio, lockscreen, Bluetooth, Android Auto |
@@ -103,7 +104,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
 /srv/
   music/            # THE LIBRARY. Navidrome mounts this read-only.
   staging/
-    rips/           # abcde output lands here
+    rips/           # abcde output lands here, then moves to /srv/inbox/ (§6.2)
     fetched/        # farfetchd drops here, awaiting human review (see docs/fetch-contract.md)
     incoming/       # rsync landing area for uploads. UNWATCHED — see §6.5
   quarantine/       # beets could not confidently match these
@@ -177,7 +178,18 @@ Deliberately **no reverse proxy in v1** — Tailscale handles access and there's
 
 ## 6. The rip pipeline
 
-Four stages: **detect → rip → tag → notify.**
+Three stages: **detect → rip → hand off.**
+
+Tagging and notification are deliberately *not* the ripper's job. `autorip.sh`
+produces a finished album directory, moves it into `/srv/inbox/`, and stops.
+From there the shared ingest pipeline takes over — the same beets import
+(§6.3) and the same `inbox-import.sh` (§6.5) that handle a manual drop or an
+approved `farfetchd` fetch.
+
+**The ripper is a producer; the ingest pipeline is the consumer.** Nothing in
+`autorip.sh` runs beets, sweeps quarantine, or knows what the library looks
+like. That split is what stops the rip path from quietly becoming a second,
+subtly different copy of the import path — see the hand-off below.
 
 ### 6.1 Detect — udev triggers systemd
 
@@ -239,6 +251,40 @@ VAOUTPUTFORMAT='Various/${ALBUMFILE}/${TRACKNUM} ${ARTISTFILE} - ${TRACKFILE}'
 
 `MAXPROCS=4` uses all four Pi cores for FLAC encoding. Encoding will finish before reading does, so ripping is drive-bound, roughly 5–10 minutes per disc.
 
+#### Hand off — the atomic move into `/srv/inbox/`
+
+When `abcde` exits, the finished album is sitting at
+`/srv/staging/rips/<Artist>/<Album>/`. `autorip.sh` then does three things and
+finishes:
+
+1. Write the per-disc log to `/srv/logs/rips/<discid>.json` — cdparanoia's
+   stderr, the read-error flag, track count, and the `handoff_path` it is about
+   to move to.
+2. `mv` the album directory to `/srv/inbox/<Artist> - <Album>/`, appending the
+   disc ID if that name is already taken.
+3. `rmdir` the now-empty artist directory left behind in staging, and eject
+   (§6.4).
+
+**The move must be a rename, not a copy.** `/srv/staging` and `/srv/inbox` are
+on the same filesystem, so `mv` is a single atomic `rename(2)` and the path
+unit watching `/srv/inbox/` can never observe a half-written album. This is the
+same completeness trick `push-music.sh` uses for uploads and `fetch.json` uses
+for fetches — it is why none of the three entry points needs a lock.
+
+The destination name is for humans only. It is what you read in the inbox, or
+in quarantine if the match fails; beets ignores it entirely and files by tags.
+
+**`autorip.sh` does not run beets.** It is tempting — the disc ID makes the
+match near-certain, and importing inline would let a single notification report
+the final outcome. Don't. `inbox-import.sh` already implements the settle wait,
+the non-zero-exit handling, the collision-safe quarantine sweep and the
+empty-directory cleanup; duplicating that in the rip path means two
+implementations and two beets invocations to keep in step, and *one ingest
+pipeline* stops being true. The price of not duplicating it is that the ripper
+no longer knows whether the album reached the library or quarantine — which is
+what `handoff_path` in the disc log exists to let `libraryd` reconstruct later
+(§10).
+
 ### 6.3 Tag — beets
 
 `/srv/config/beets/config.yaml`:
@@ -298,7 +344,7 @@ scrub:
   auto: yes
 ```
 
-**`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `autorip.sh` then sweeps leftovers from `/srv/staging/rips/` into `/srv/quarantine/` for later review.
+**`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `inbox-import.sh` then sweeps whatever is still sitting in `/srv/inbox/` into `/srv/quarantine/` for later review — one sweep, covering rips and manual drops alike, because by this point they are indistinguishable (§6.5).
 
 ### The library rules these paths enforce
 
@@ -325,21 +371,45 @@ Test the branches by flipping the *condition* (`> 1` vs `>= 1`), not by substitu
 
 ### 6.4 Notify
 
-At the end of `autorip.sh`:
+Split across the two halves, because they signal different things.
 
-1. Eject the disc (physical signal that it's done).
-2. POST to Navidrome's rescan endpoint so the album appears immediately.
-3. Push via **ntfy** — self-hosted or ntfy.sh with a random topic. Message: album name, track count, and whether it went to library or quarantine.
+**`autorip.sh` ejects the disc** as soon as the hand-off move succeeds. That is
+a physical signal with a narrow, immediate meaning: *the drive is free, put the
+next disc in.* It says nothing about the library, because at that moment the
+album has not been imported yet.
 
-### 6.5 The non-CD path
+**`inbox-import.sh` notifies**, because it is the only thing that knows the
+outcome:
 
-`/srv/inbox/` is watched by a systemd path unit. Anything dropped there (Bandcamp downloads, existing collection, purchases) gets the same beets import with the same quarantine behaviour.
+1. POST to Navidrome's rescan endpoint so new albums appear immediately.
+2. Push via **ntfy** — self-hosted or ntfy.sh with a random topic. Message: how
+   many albums imported, how many went to quarantine, and their names.
+
+Putting both on the ingest side means all three entry points get them. Under
+the previous design only rips poked Navidrome, so a manual drop or an approved
+fetch stayed invisible until the next scheduled scan — a bug avoided here by
+accident.
+
+Two consequences to expect. The notification is now **per import run, not per
+album**: a stack of CDs ripped back to back collapses into one push covering
+several discs, and a 30-album migration produces one message rather than
+thirty. That is the better default, but it means ntfy is no longer a reliable
+"*this* disc is done" signal — the eject is. And an album now appears in the
+library roughly `SETTLE_SECONDS` after the rip finishes rather than
+immediately. Two minutes of latency on an unattended process is not worth a
+second import path to avoid.
+
+### 6.5 The shared ingest path
+
+`/srv/inbox/` is watched by a systemd path unit. Anything that lands there — a
+rip, a Bandcamp download, the existing collection, an approved fetch — gets the
+same beets import with the same quarantine behaviour.
 
 **One ingest pipeline, three entry points:**
 
 | Entry | Lands in | Reviewed before import? |
 |---|---|---|
-| Optical drive | `/srv/staging/rips/` | No — disc ID is trustworthy |
+| Optical drive | `/srv/inbox/` via `/srv/staging/rips/` | No — disc ID is trustworthy |
 | Upload from a computer | `/srv/inbox/` via `/srv/staging/incoming/` | No — you sent it deliberately |
 | `farfetchd` | `/srv/staging/fetched/` | **Yes** — confirm it fetched the right release |
 
@@ -347,6 +417,13 @@ The third is the only one with a review gate, because it's the only one where
 something automated *chose* what to retrieve. Approving moves the directory to
 `/srv/inbox/`, at which point it's indistinguishable from a manual drop and the
 existing path unit takes over. No second pipeline, no new systemd units.
+
+**All three converge on `/srv/inbox/`.** Whatever produced the files —
+cdparanoia, rsync, `fetchd` — the last step is always an atomic move into the
+inbox, and everything downstream of it is shared. `autorip@.service` and
+`inbox.path` are separate units with no ordering relationship between them and
+no knowledge of each other; the filesystem is the only thing that passes from
+producer to consumer.
 
 See `docs/fetch-contract.md` for the full interface.
 
@@ -665,6 +742,12 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 | POST | `/eject` | Eject the tray remotely |
 | GET | `/stats` | Album count, total size, rips per month, top artists |
 
+**On `/rips`:** rip history comes from `/srv/logs/rips/`, which records the rip
+and nothing after it — the ripper hands off before the import happens (§6.2), so
+it cannot know the outcome. Each disc log carries `handoff_path`; `libraryd`
+resolves final status by checking whether that name is still sitting in
+`/srv/quarantine/`.
+
 Ship a minimal web dashboard on the same service — this is the actual UI for quarantine review and lint violations, and it works from any browser, so it doesn't need to live in the Android app.
 
 **On `/releases/merge`:** do this by rewriting tags (set a shared `album` and continuous `disc`/`track` numbering) and letting beets re-file, *not* by maintaining a separate mapping table that the app has to know about. Rewriting means the merge is visible to every client, survives a rebuild, and needs zero app-side logic. It does break the one-folder rule for that release — accept the exception, or keep the discs separate and let it go. Low priority either way.
@@ -802,10 +885,9 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - **Done when:** one album has gone disc → library with correct tags and art
 
 ### Phase 3 — Automation
+- `/srv/inbox/` path unit + `inbox-import.sh` **first** — it is the consumer everything else feeds (settle wait, quarantine sweep, ntfy, Navidrome rescan poke)
 - `autorip.sh`, the systemd template unit, the udev rule
-- Per-disc logging, error detection, quarantine sweep
-- ntfy notifications, auto-eject, Navidrome rescan poke
-- `/srv/inbox/` path unit + `inbox-import.sh` for non-CD ingest (settle wait, quarantine sweep)
+- Per-disc logging, error detection, atomic hand-off into `/srv/inbox/`, auto-eject
 - `lint.py` (§6.6) + nightly timer
 - **Done when:** insert disc, walk away, get a phone notification, album is in the library — and the linter reports zero violations
 
@@ -849,6 +931,8 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - **A song result in search must never become a standalone queue.** It's the one spot where the philosophy is easy to violate by accident.
 - **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
 - **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
+- **Never let `autorip.sh` run beets itself.** The disc ID makes the match easy and inlining the import is tempting, but it duplicates `inbox-import.sh`'s settle wait, quarantine sweep and cleanup, and leaves two beets invocations to drift apart. Rip, move into `/srv/inbox/`, stop.
+- **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
 - **`find -newermt "-120 seconds"` is a GNU extension.** Other `find` implementations reject it, and if the error is suppressed the result reads as "nothing changed recently" — so a settle-check built on it silently concludes the copy has finished and imports mid-write. Use a reference file with POSIX `-newer`, and don't suppress the error.
 - **Confirm RNTP v5's licence and Expo SDK support before scaffolding the app.** The fallback is an incompatible API, so discovering a problem late means rewriting the playback layer.
@@ -874,7 +958,8 @@ Worth being precise about this, because it prevents over-splitting:
 
 | Component | What it actually is |
 |---|---|
-| Ingest pipeline | Event-triggered batch job (udev → systemd → script) |
+| Ripper | Event-triggered batch job (udev → systemd → script). A producer: it writes files and a log, and nothing else |
+| Ingest pipeline | Path-triggered batch job (`inbox.path` → `inbox-import.sh`). The only thing that runs beets |
 | Linter | Scheduled batch job |
 | `libraryd` API | The only long-running HTTP service in this repo |
 | `fetchd` | A second long-running service, in the separate `farfetchd` repo |
@@ -883,9 +968,32 @@ Worth being precise about this, because it prevents over-splitting:
 | Subsonic client | A library inside Deadwax |
 | Navidrome | Third-party — you write config, not code |
 
-The first three **do not talk over HTTP**. They integrate through the filesystem contract in `/srv`: the ripper writes per-disc JSON logs, the linter writes `lint.json`, `libraryd` reads both. They share a machine, a language, a user account, and a directory layout.
+The first four **do not talk over HTTP**. They integrate through the filesystem contract in `/srv`: the ripper writes FLACs into `/srv/inbox/` and a JSON log per disc, the ingest pipeline consumes whatever appears in the inbox, the linter writes `lint.json`, and `libraryd` reads all of it. They share a machine, a language, a user account, and a directory layout.
 
 Splitting them into separate repos would make every change to that contract a coordinated multi-repo commit, in exchange for nothing.
+
+### Why the ripper is not its own repo
+
+Asked and settled. The concern worth separating is already separated:
+`autorip.sh` cannot reach `library.db`, Navidrome, or `/srv/music` — it writes
+to a directory and stops (§6.2). That boundary is enforced by what the script
+touches, not by where its source lives, and a repo split would buy exactly the
+same isolation while additionally requiring a `rip-contract.md` in the style of
+`fetch-contract.md`, a second clone on the Pi, and a two-commit dance every
+time the disc-log schema changes.
+
+Nor is a split needed to make ripping optional. A machine with no optical drive
+simply doesn't install the udev rule and `abcde.conf`; the other two entry
+points are unaffected. An absent file is the cheapest feature flag available.
+
+`farfetchd` is separate for a different reason entirely — it is permanently
+private. That is a *distribution* boundary, not a modularity one, and the
+~150-line contract document it needs is a fair illustration of what the second
+kind costs.
+
+Revisit if the ripper ever needs to run on a **different machine** than the
+library — ripping on a laptop with a better drive, say. A different deployment
+target is a real repo boundary; a different subdirectory is not.
 
 ### Repositories
 
