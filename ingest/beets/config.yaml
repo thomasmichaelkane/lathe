@@ -43,7 +43,13 @@ match:
 # 'bandcamp' (beetcamp) is not optional for a download-based collection:
 # Bandcamp edits, bootlegs and unofficial remixes are largely absent from
 # MusicBrainz and can never match without it.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url
+
+# Local plugin dir. beets resolves pluginpath against the CWD, not the config
+# directory, so it must be absolute — the test overlay replaces this the same
+# way it replaces `directory` and `library`.
+pluginpath:
+  - /srv/config/beets/plugins
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -79,3 +85,37 @@ replaygain:
 
 scrub:
   auto: yes
+
+# Strip MusicBrainz ID fields that do not contain a MusicBrainz ID.
+#
+# beets maps whatever ID a metadata source supplies onto mb_albumid
+# (autotag/hooks.py: "album_id": "mb_albumid"), so Bandcamp-sourced releases
+# arrive with bandcamp.com URLs in MUSICBRAINZ_ALBUMID, MUSICBRAINZ_TRACKID,
+# MUSICBRAINZ_ARTISTID and the rest. Those fields are UUIDs by definition and
+# Navidrome forwards them to ListenBrainz as MBIDs, so the URL is wrong data
+# leaving the house. There is no MusicBrainz ID for a release MusicBrainz does
+# not have, so the honest value is none at all — the URL itself is preserved in
+# BANDCAMP_ALBUM_URL/BANDCAMP_TRACK_URL by the bandcamp_url plugin.
+#
+# Two things here are easy to get wrong and both fail silently:
+#
+#   1. The patterns are UNANCHORED. beets 2.x made the artist-ID fields
+#      multi-valued; '^https?://' does not match the stringified list, so the
+#      tag survives while the config looks correct.
+#   2. The PLURAL fields must be listed too. mediafile writes
+#      MUSICBRAINZ_ARTISTID from mb_artistids, so zeroing only mb_artistid
+#      leaves the tag in place.
+#
+# update_database stays at its default (off) on purpose: library.db keeps the
+# URL in mb_albumid, which is what makes it available for re-resolution.
+zero:
+  fields: mb_albumid mb_albumartistid mb_albumartistids mb_artistid mb_artistids mb_trackid mb_releasetrackid mb_releasegroupid mb_workid
+  mb_albumid: ['https?://']
+  mb_albumartistid: ['https?://']
+  mb_albumartistids: ['https?://']
+  mb_artistid: ['https?://']
+  mb_artistids: ['https?://']
+  mb_trackid: ['https?://']
+  mb_releasetrackid: ['https?://']
+  mb_releasegroupid: ['https?://']
+  mb_workid: ['https?://']

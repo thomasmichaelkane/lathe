@@ -282,7 +282,13 @@ match:
 # 'bandcamp' (beetcamp) is not optional for a download-based collection:
 # Bandcamp edits, bootlegs and unofficial remixes are largely absent from
 # MusicBrainz and can never match without it.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url
+
+# Local plugin dir. beets resolves pluginpath against the CWD, not the config
+# directory, so it must be absolute — the test overlay replaces this the same
+# way it replaces `directory` and `library`.
+pluginpath:
+  - /srv/config/beets/plugins
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -318,6 +324,40 @@ replaygain:
 
 scrub:
   auto: yes
+
+# Strip MusicBrainz ID fields that do not contain a MusicBrainz ID.
+#
+# beets maps whatever ID a metadata source supplies onto mb_albumid
+# (autotag/hooks.py: "album_id": "mb_albumid"), so Bandcamp-sourced releases
+# arrive with bandcamp.com URLs in MUSICBRAINZ_ALBUMID, MUSICBRAINZ_TRACKID,
+# MUSICBRAINZ_ARTISTID and the rest. Those fields are UUIDs by definition and
+# Navidrome forwards them to ListenBrainz as MBIDs, so the URL is wrong data
+# leaving the house. There is no MusicBrainz ID for a release MusicBrainz does
+# not have, so the honest value is none at all — the URL itself is preserved in
+# BANDCAMP_ALBUM_URL/BANDCAMP_TRACK_URL by the bandcamp_url plugin.
+#
+# Two things here are easy to get wrong and both fail silently:
+#
+#   1. The patterns are UNANCHORED. beets 2.x made the artist-ID fields
+#      multi-valued; '^https?://' does not match the stringified list, so the
+#      tag survives while the config looks correct.
+#   2. The PLURAL fields must be listed too. mediafile writes
+#      MUSICBRAINZ_ARTISTID from mb_artistids, so zeroing only mb_artistid
+#      leaves the tag in place.
+#
+# update_database stays at its default (off) on purpose: library.db keeps the
+# URL in mb_albumid, which is what makes it available for re-resolution.
+zero:
+  fields: mb_albumid mb_albumartistid mb_albumartistids mb_artistid mb_artistids mb_trackid mb_releasetrackid mb_releasegroupid mb_workid
+  mb_albumid: ['https?://']
+  mb_albumartistid: ['https?://']
+  mb_albumartistids: ['https?://']
+  mb_artistid: ['https?://']
+  mb_artistids: ['https?://']
+  mb_trackid: ['https?://']
+  mb_releasetrackid: ['https?://']
+  mb_releasegroupid: ['https?://']
+  mb_workid: ['https?://']
 ```
 
 **`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `autorip.sh` then sweeps leftovers from `/srv/staging/rips/` into `/srv/quarantine/` for later review.
@@ -417,10 +457,45 @@ existed.
 **`autorip.sh` must use the same two passes**, for the same reasons. A CD rip
 has no `data_source` tag either.
 
-> **Open:** for Bandcamp-*only* releases, `MUSICBRAINZ_ALBUMID` and
-> `MUSICBRAINZ_TRACKID` hold a bandcamp.com URL rather than a UUID. Decide
-> whether to clear them, or relocate the URL to a flexible field, before the
-> collection is imported for real.
+### MusicBrainz ID fields on Bandcamp releases — settled
+
+beets maps whatever ID a metadata source supplies onto `mb_albumid`
+(`autotag/hooks.py`: `"album_id": "mb_albumid"`). It is not a beetcamp quirk —
+every source goes through it, and only Discogs got a dedicated
+`discogs_albumid` alongside. So a Bandcamp-sourced release arrives with
+bandcamp.com URLs in five ID fields: `MUSICBRAINZ_ALBUMID`,
+`MUSICBRAINZ_TRACKID`, `MUSICBRAINZ_RELEASETRACKID`, `MUSICBRAINZ_ARTISTID`
+and `MUSICBRAINZ_ALBUMARTISTID`.
+
+Those fields are UUIDs by definition, and Navidrome forwards them to
+ListenBrainz as MBIDs, so a URL there is wrong data leaving the house. There is
+no MusicBrainz ID for a release MusicBrainz does not have, so **the correct
+value is none at all** — the `zero` plugin strips them, matched on the value
+looking like a URL so genuine MBIDs are untouched.
+
+Two ways to get that config subtly wrong, both of which fail silently and look
+like they worked:
+
+- **Patterns must be unanchored.** beets 2.x made the artist-ID fields
+  multi-valued; `^https?://` does not match the stringified list and the tag
+  survives.
+- **The plural fields must be listed.** mediafile writes `MUSICBRAINZ_ARTISTID`
+  from `mb_artistids`, so zeroing only `mb_artistid` leaves the tag in place.
+
+`MUSICBRAINZ_ALBUMSTATUS` and `MUSICBRAINZ_ALBUMTYPE` deliberately survive —
+they are enumerated values, not identifiers.
+
+The URL itself is preserved, in `BANDCAMP_ALBUM_URL` / `BANDCAMP_TRACK_URL`, by
+`ingest/beets/plugins/bandcamp_url.py`. In the *file*, not just in `library.db`:
+`/srv/music` is the master and the database is derived, so a rebuild from files
+alone must not lose the only route back to a release MusicBrainz cannot
+describe. That route is what `libraryd`'s quarantine-resolve needs, since
+`album_for_id(<bandcamp url>)` re-fetches the release. Verified 2026-08-21:
+beets reads both fields back off a FLAC with `mb_albumid` empty.
+
+The plugin reads from `item` rather than from the `tags` dict, so it does not
+matter whether `zero` runs before or after it — both listen for `write` and the
+order is not guaranteed.
 
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
 
