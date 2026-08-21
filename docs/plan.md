@@ -497,7 +497,80 @@ The plugin reads from `item` rather than from the `tags` dict, so it does not
 matter whether `zero` runs before or after it — both listen for `write` and the
 order is not guaranteed.
 
+### What counts as one multi-disc album on disk
+
+beets decides how many import tasks a directory becomes *before* any matching
+happens, by collapsing directories that look like discs of one release. It
+collapses on the markers `dis[ck]`, `cd`, `cassette`, `digital media` and
+`vinyl`, each followed by a digit. Measured 2026-08-21:
+
+| Layout | Import tasks |
+|---|---|
+| `Album/CD1/`, `Album/CD2/` | 1 |
+| `Album/Disc 1/`, `Album/Disc 2/` | 1 |
+| `Album Disc 1/`, `Album Disc 2/` (siblings) | 1 |
+| `Album (1 of 2)/`, `Album (2 of 2)/` | **2** |
+| all tracks flat in one folder | 1 |
+
+Sibling folders are fine as long as the name carries a marker. The trap is the
+sensible-looking name that carries none — `(1 of 2)` silently becomes two
+half-releases, and see below for why those can never import.
+
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
+
+### 6.3a Multi-disc CDs — the ripper produces one disc at a time
+
+This is the case that makes `multidisc` fiddly, and it is not about folder
+layout. A multi-disc set is ripped one disc per insertion, so without
+intervention each disc reaches `/srv/inbox/` as its own import task, minutes or
+days apart.
+
+**A single disc of a multi-disc set can never auto-import.** Presented alone
+against the full release it is missing half the tracklist, and `max_rec` turns
+that into a hard stop rather than a judgement call:
+
+```yaml
+max_rec:
+  missing_tracks: low
+```
+
+`autotag/match.py` caps the recommendation at `max_rec[key]` whenever a penalty
+of that key is present, and quiet mode only applies `Recommendation.strong`. So
+any missing track downgrades the result to `low`, `quiet_fallback: skip` fires,
+and the disc quarantines — no matter how good the match otherwise is. Measured
+on half an 8-track album: distance 0.2718, penalties `missing_tracks`,
+`data_source`, `tracks`, recommendation `none`.
+
+That is correct behaviour and the threshold should not be relaxed to work
+around it. Every disc of every box set landing in quarantine for manual repair
+would, however, gut the "ripping is fully automated" goal.
+
+**So `autorip.sh` must accumulate a set before handing it over**, rather than
+importing each disc as it finishes:
+
+1. Look the disc's TOC up by MusicBrainz disc ID (`/ws/2/discid/<id>`). The
+   response identifies the release *and* its medium list, which gives both this
+   disc's position and the total disc count — before ripping anything.
+2. `disctotal == 1`, or no disc ID match: straight to `/srv/inbox/` as now.
+   This is the overwhelming majority of discs and must not be delayed.
+3. `disctotal > 1`: rip into `/srv/staging/rips/<release-mbid>/CD<n>/` and stop
+   there. Only when all `disctotal` disc directories are present does the whole
+   `<release-mbid>` directory move into `/srv/inbox/`, where beets collapses the
+   nested `CD1`/`CD2` layout into a single import task (see the table in §6.3)
+   and the `multidisc` path template splits it back out into
+   `Album (Disc 01)` / `Album (Disc 02)`.
+
+Consequences to design for:
+
+- **The notification in §6.4 becomes stateful.** "Disc 1 of 2 done — insert
+  disc 2" is the useful message; a bare "done" is actively misleading.
+- **Incomplete sets need a sweeper.** A set whose remaining discs never arrive
+  must not sit in staging forever. Age it out into `/srv/quarantine/` with the
+  discs it does have, so it surfaces for review rather than being silently
+  half-ripped.
+- **`libraryd` needs to show pending sets** — which releases are waiting on
+  which discs — otherwise the only way to know is to `ls` the staging tree.
+- **A re-rip of a disc already present** should replace it, not collide.
 
 ### 6.4 Notify
 
