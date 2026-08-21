@@ -27,10 +27,12 @@ DEV_NAME="${1:-sr0}"
 DEVICE="/dev/$DEV_NAME"
 
 # Paths are overridable so autorip-test.sh can exercise the hand-off against a
-# temporary tree. Defaults are the real ones; nothing else sets these.
-RIPS="${RIPS_DIR:-/srv/staging/rips}"
-INBOX="${INBOX_DIR:-/srv/inbox}"
-LOGS="${RIP_LOGS_DIR:-/srv/logs/rips}"
+# temporary tree, running this exact script rather than a reimplementation of
+# it. Same convention as inbox-import.sh. Defaults are the real ones; nothing
+# in production sets these.
+RIPS="${RIPS:-/srv/staging/rips}"
+INBOX="${INBOX:-/srv/inbox}"
+RIP_LOGS="${RIP_LOGS:-/srv/logs/rips}"
 
 # Overridable so the test can substitute a stub that fabricates abcde's output
 # without a drive attached. Everything after the rip is what needs testing.
@@ -82,14 +84,14 @@ disc_id() {
 # Pinned by the test so collision behaviour is deterministic. Unset in reality.
 DISCID="${DISC_ID_OVERRIDE:-$(disc_id)}"
 
-mkdir -p "$RIPS/.work" "$LOGS" "$INBOX"
+mkdir -p "$RIPS/.work" "$RIP_LOGS" "$INBOX"
 
 WORK="$RIPS/.work/$DISCID.$$"
 OUT="$WORK/out"
 mkdir -p "$OUT"
 
-RAW_LOG="$LOGS/$DISCID.log"
-JSON_LOG="$LOGS/$DISCID.json"
+RAW_LOG="$RIP_LOGS/$DISCID.log"
+JSON_LOG="$RIP_LOGS/$DISCID.json"
 
 # Write the structured log from Python rather than assembling JSON in bash.
 # Album and artist names contain quotes, backslashes and non-ASCII often enough

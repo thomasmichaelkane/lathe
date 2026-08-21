@@ -89,9 +89,9 @@ new_root() {
 run_autorip() {
   local root="$1" discid="$2"
   env \
-    RIPS_DIR="$root/rips" \
-    INBOX_DIR="$root/inbox" \
-    RIP_LOGS_DIR="$root/logs" \
+    RIPS="$root/rips" \
+    INBOX="$root/inbox" \
+    RIP_LOGS="$root/logs" \
     ABCDE_CMD="$TMP/abcde-stub" \
     NTFY_URL="" \
     DISC_ID_OVERRIDE="$discid" \
@@ -227,9 +227,9 @@ echo "case 7: a non-atomic hand-off is refused before ripping"
 root="$(new_root 7)"
 rc=0
 env \
-  RIPS_DIR="$root/rips" \
-  INBOX_DIR=/dev/shm \
-  RIP_LOGS_DIR="$root/logs" \
+  RIPS="$root/rips" \
+  INBOX=/dev/shm \
+  RIP_LOGS="$root/logs" \
   ABCDE_CMD="$TMP/abcde-stub" \
   NTFY_URL="" \
   DISC_ID_OVERRIDE=DISC006 \
