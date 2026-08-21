@@ -250,41 +250,92 @@ library: /srv/config/beets/library.db
 import:
   move: yes
   quiet: yes
-  quiet_fallback: skip     # <-- the safety valve
+  quiet_fallback: skip     # the safety valve — never guess, leave it in place
   incremental: yes
   log: /srv/logs/beets-import.log
 
+# Both metadata sources override their data-source mismatch penalty.
+#
+# beets 2.x (autotag/distance.py, add_data_source) applies a 0.5 penalty to any
+# candidate whose data_source differs from the file's existing `data_source`
+# tag — but ONLY once more than one metadata source plugin is loaded:
+#
+#     if before != after and (before or len(find_metadata_source_plugins()) > 1)
+#
+# Fresh downloads and rips have no `data_source` tag, so `before` is empty and
+# EVERY candidate from EVERY source is penalised. With one source the guard is
+# false and nothing is penalised, which is why adding beetcamp silently broke a
+# previously-perfect match: MusicBrainz went 0.00 -> 0.12, over
+# strong_rec_thresh, so quiet_fallback: skip quarantined it. Left unfixed with
+# two sources loaded, nothing ever reaches 0.04 and the whole library
+# quarantines.
+#
+# Overriding both is right rather than merely symmetric: match quality is what
+# we want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able
+# to win outright, which a 0.5 penalty would prevent. See each source below for
+# why MusicBrainz is 0.0 and Bandcamp is a small non-zero value.
+musicbrainz:
+  data_source_mismatch_penalty: 0.0
+
+bandcamp:
+  # Deliberately a small non-zero value, not 0.0. With both sources at 0.0 a
+  # release present in both scores 0.00 twice and Bandcamp wins the tie by
+  # ordering — and beetcamp writes Bandcamp URLs into MUSICBRAINZ_ALBUMID /
+  # MUSICBRAINZ_TRACKID, so the real MBIDs are lost from the archive masters.
+  #
+  # This penalty lands on the data_source key at both album and track level,
+  # which normalises to roughly the penalty value itself as a total distance.
+  # 0.02 therefore keeps Bandcamp-only releases comfortably under
+  # strong_rec_thresh (0.04) while letting MusicBrainz win any tie.
+  data_source_mismatch_penalty: 0.02
+
 match:
   # DISTANCE threshold, not a confidence score: beets auto-accepts matches
-  # scoring BELOW this. Lower is stricter. 0.04 is the beets default; do not
-  # raise it thinking you are tightening the filter — you are loosening it.
+  # scoring BELOW this value. Lower is stricter. 0.04 is the beets default.
+  # Do NOT raise this thinking it tightens the filter — it loosens it.
   strong_rec_thresh: 0.04
   max_rec:
     missing_tracks: low
     unmatched_tracks: low
 
-# 'musicbrainz' is load-bearing on beets 2.x: MB matching moved out of core
-# into a plugin. Omit it and every import finds no match and falls through to
-# quiet_fallback: skip — silently, with a zero exit code. Implicit in 1.6.
-plugins: musicbrainz fetchart replaygain scrub lastgenre missing edit inline
+# 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
+# into a plugin. Omit it and every import silently finds no match and falls
+# through to quiet_fallback: skip. It was implicit in 1.6.
+# 'bandcamp' (beetcamp) is a second autotagger source. Bandcamp edits,
+# bootlegs and unofficial remixes are largely absent from MusicBrainz, so
+# without it a real chunk of a download-based collection can never match
+# and quarantines permanently. It is consulted alongside MB, not instead.
+plugins: musicbrainz bandcamp bandcamp_datasource_case fetchart replaygain scrub lastgenre missing edit inline
 
-# Used below to split multi-disc sets into one release per disc.
+# Local plugin dir. beets resolves pluginpath against the CWD, not the config
+# directory, so it must be absolute — the test overlay replaces this the same
+# way it replaces `directory` and `library`.
+pluginpath:
+  - /srv/config/beets/plugins
+
+# Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
 # string as unambiguously false, whereas how it coerces the string "0" is a
-# beets-version detail you do not want the library layout depending on.
+# beets-version detail the library layout must not depend on.
 item_fields:
   multidisc: 1 if disctotal > 1 else ''
 
+# No `singleton:` template. Nothing in the pipeline ever passes `beet import
+# -s`, so it was unreachable; and a singleton files with no cover.jpg, which
+# breaks the one-folder-one-cover rule. A single is a one-track *release* and
+# goes through `default:` like everything else.
 paths:
   default: $albumartist/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
   comp: Various Artists/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
-  singleton: $artist/$title/01 $title
 
 fetchart:
   auto: yes
   cautious: yes
-  sources:                # list form required on 2.x; the old space-separated
-    - filesystem         # string is rejected at startup
+  sources:                # beets 2.x requires list form here;
+    - filesystem         # the old space-separated string is rejected
+    - cover_art_url      # beetcamp sets album.cover_art_url; this core source
+                         # consumes it. beetcamp's own 'Bandcamp' source is NOT
+                         # a valid key here — fetchart rejects it at startup.
     - coverart
     - itunes
     - albumart
@@ -320,6 +371,48 @@ Both branches behave, the leading space after the comma is preserved (it's what 
 **`$disc` is zero-padded to two digits on 2.x** — a second disc folders as `Album (Disc 02)`, not `Album (Disc 2)`. Padding sorts correctly, so it is kept; note it here because it differs from what this plan specified under 1.6.
 
 Test the branches by flipping the *condition* (`> 1` vs `>= 1`), not by substituting a bare literal. `item_fields` values are Python expression bodies, and the `inline` plugin fails to load on a bare `1` or `0` — a substitution test looks like it ran and proves nothing.
+
+### Two metadata sources, and the penalty that breaks them
+
+`bandcamp` (beetcamp) runs alongside `musicbrainz`. It is not optional for a
+download-based collection: Bandcamp edits, bootlegs and unofficial remixes are
+largely absent from MusicBrainz, and without it they can never match and
+quarantine permanently.
+
+Adding it has one non-obvious consequence, verified 2026-08-21. beets penalises
+any candidate whose `data_source` differs from the file's existing tag, but only
+once a *second* metadata source plugin loads:
+
+```python
+# beets/autotag/distance.py — add_data_source
+if before != after and (before or len(find_metadata_source_plugins()) > 1):
+    self.add("data_source", metadata_plugins.get_penalty(after))
+```
+
+Fresh downloads have no `data_source` tag, so `before` is empty and every
+candidate from every source takes the default **0.5**. It applies per album
+*and* per track, so on a 13-track release a byte-perfect match scored 0.1125
+instead of 0.0000 and quarantined. With the default left in place and two
+sources loaded, nothing reaches `strong_rec_thresh` and the whole library
+quarantines.
+
+`get_penalty` resolves the configured value by matching the candidate's
+`data_source` against each plugin's. beetcamp disagrees with itself about the
+case — `DATA_SOURCE = "bandcamp"` on the metadata it produces,
+`data_source = "Bandcamp"` on the plugin — so the lookup misses, falls back to
+the hardcoded 0.5, and `bandcamp.data_source_mismatch_penalty` has no effect at
+all. `ingest/beets/plugins/bandcamp_datasource_case.py` normalises the casing.
+It must walk `AlbumInfo.tracks` explicitly: nested `TrackInfo` objects never
+fire `trackinfo_received`, and they carry most of the penalty.
+
+Bandcamp keeps a small non-zero penalty rather than 0.0 so that MusicBrainz wins
+ties. beetcamp writes Bandcamp **URLs** into `MUSICBRAINZ_ALBUMID` and
+`MUSICBRAINZ_TRACKID`, so a tie lost to Bandcamp costs the real MBIDs that
+Navidrome and ListenBrainz rely on.
+
+> **Open:** for Bandcamp-*only* releases those fields still hold a URL rather
+> than a UUID. Decide whether to clear them, or relocate the URL to a flexible
+> field, before the collection is imported for real.
 
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
 
@@ -734,7 +827,8 @@ testdata/
 | Normal single-disc album, well known | The happy path |
 | **A multi-disc release** | The `multidisc` expression — the #1 flagged risk |
 | Various-artists compilation | The separate `comp` path template |
-| An EP or single | `albumtype`, and the `singleton` path |
+| An EP or single | `albumtype`, via the `default` path — a single is a one-track *release*, not a beets singleton |
+| A Bandcamp single-track download | The worst real case: Bandcamp gives these **no `ALBUM` tag at all**, with everything crammed into `TITLE`. Nothing can match them automatically — they are the quarantine path |
 
 Mostly FLAC, since that's the archive format and ReplayGain-via-ffmpeg needs testing on it. NIN's *Ghosts I–IV* (free, FLAC, CC, well-catalogued in MusicBrainz, genuinely multi-disc) and *The Slip* cover the first two cheaply.
 
