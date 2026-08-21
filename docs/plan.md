@@ -263,7 +263,10 @@ match:
     missing_tracks: low
     unmatched_tracks: low
 
-plugins: fetchart replaygain scrub lastgenre missing edit inline
+# 'musicbrainz' is load-bearing on beets 2.x: MB matching moved out of core
+# into a plugin. Omit it and every import finds no match and falls through to
+# quiet_fallback: skip — silently, with a zero exit code. Implicit in 1.6.
+plugins: musicbrainz fetchart replaygain scrub lastgenre missing edit inline
 
 # Used below to split multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -280,7 +283,11 @@ paths:
 fetchart:
   auto: yes
   cautious: yes
-  sources: filesystem coverart itunes albumart
+  sources:                # list form required on 2.x; the old space-separated
+    - filesystem         # string is rejected at startup
+    - coverart
+    - itunes
+    - albumart
   filename: cover        # always cover.jpg — one image, one name
 
 replaygain:
@@ -298,18 +305,21 @@ scrub:
 1. **One release = one folder.** Never nested, never split.
 2. **A folder contains audio tracks and exactly one `cover.jpg`.** Nothing else.
 3. **No embedded artwork.** `embedart` is deliberately absent from the plugin list. The image lives once, on disk, and Navidrome serves it via `getCoverArt`.
-4. **Multi-disc sets become one release per disc** — `Album (Disc 1)`, `Album (Disc 2)`. This preserves rule 1 at the cost of splitting a conceptual release; `libraryd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
+4. **Multi-disc sets become one release per disc** — `Album (Disc 01)`, `Album (Disc 02)`. This preserves rule 1 at the cost of splitting a conceptual release; `libraryd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
 5. **Singles are one-track releases**, foldered like everything else.
 
-The `multidisc` field comes from the `inline` plugin. **Verified on beets 1.6.0 (2026-08-19)** — the field registers, and rendering `$album%if{$multidisc, (Disc $disc)}` gives:
+The `multidisc` field comes from the `inline` plugin. **Verified on beets 2.13.1 (2026-08-21)** against a real single-disc import, rendering `$album%if{$multidisc, (Disc $disc)}`:
 
-| `multidisc` | Output |
-|---|---|
-| `1` | `Ghosts I-IV (Disc 2)` |
-| `''` | `The Slip` |
-| `0` | `The Slip` |
+| `multidisc` expression | Value | Output |
+|---|---|---|
+| `1 if disctotal > 1 else ''` (shipping) | `''` | `Grapefruit Regret` |
+| `1 if disctotal >= 1 else ''` (forces true branch) | `1` | `Grapefruit Regret (Disc 01)` |
 
-So both branches behave, the leading space after the comma is preserved (it's what separates title from suffix), and single-disc albums get no suffix. Note `0` also works here — beets' `%if{}` int-coerces its condition — so the `''` in the config is belt-and-braces, not a bug fix. Re-check this if the beets version changes, since the coercion path is an implementation detail rather than a documented guarantee.
+Both branches behave, the leading space after the comma is preserved (it's what separates title from suffix), and single-disc albums get no suffix.
+
+**`$disc` is zero-padded to two digits on 2.x** — a second disc folders as `Album (Disc 02)`, not `Album (Disc 2)`. Padding sorts correctly, so it is kept; note it here because it differs from what this plan specified under 1.6.
+
+Test the branches by flipping the *condition* (`> 1` vs `>= 1`), not by substituting a bare literal. `item_fields` values are Python expression bodies, and the `inline` plugin fails to load on a bare `1` or `0` — a substitution test looks like it ran and proves nothing.
 
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
 
@@ -675,7 +685,19 @@ Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes 
 
 **b) Tune beets — highest value of the real work**
 
-The fiddliest config in the plan and the one most likely to bite. Install beets locally, point it at a **copy** of existing music (never the original — `import.move: yes` physically relocates and renames every file it touches, so a bad template rearranges your actual collection), and iterate until:
+**Install beets 2.x — not the distro package.** Ubuntu ships beets `1.6.0` (2022) and that is the only apt candidate, so `apt upgrade` will never move you off it. 1.6.0 writes a corrupted `RELEASETYPE` tag: it stores `albumtypes` as the plain string `album`, mediafile exposes that tag as a *list* field, so it iterates the string character by character and writes `a;l;b;u;m` into every file. These are the archive masters — do not build the library with it.
+
+A system-wide `pip install` is blocked by PEP 668 (`EXTERNALLY-MANAGED`). Use `uv`, which puts `beet` on `PATH` in an isolated environment without touching system packages:
+
+```sh
+uv tool install "beets[fetchart,lastgenre]"
+```
+
+Skip beets' own `replaygain` extra — it pulls PyGObject for the GStreamer backend, which needs system dev headers to build. §6.3 uses `backend: ffmpeg`, which has no Python dependency. Confirm `which beet` resolves to `~/.local/bin/beet` and not `/usr/bin/beet`; leaving the apt package installed is harmless as long as `~/.local/bin` precedes `/usr/bin` on `PATH`.
+
+Verified on **2.13.1** (2026-08-21): all seven plugins load, MusicBrainz matching works, `RELEASETYPE=album` writes correctly.
+
+The rest is the fiddliest config in the plan and the one most likely to bite. Point beets at a **copy** of existing music (never the original — `import.move: yes` physically relocates and renames every file it touches, so a bad template rearranges your actual collection), and iterate until:
 
 - Path templates produce exactly the folder structure in §6.3
 - The `inline` plugin's `multidisc` expression actually evaluates — verify before trusting it
@@ -698,6 +720,8 @@ testdata/
 ```
 
 `lathe/ingest/reset-testdata.sh` wipes everything derived and re-copies `originals/` → `staging/`, because `move: yes` means each import consumes its input and you'll run it many times.
+
+**`incremental: yes` state does not live in `library.db`.** beets keeps the set of already-imported paths in a `state.pickle` next to the config, so deleting the database resets nothing — every import after the first reports `Skipping previously-imported path` and exits 0, and you can spend an afternoon "tuning templates" while running no imports at all. The test overlay pins `statefile:` into `testdata/beets/` and `reset-testdata.sh` deletes it alongside the db. Left at its default it lands inside the `lathe` repo (gitignored, but still the wrong place).
 
 **Config layering — use `lathe/ingest/beet-test.sh`, don't call `beet` directly.** The test setup must run the *real* production config so that what gets tuned is what ships. beets layers `$BEETSDIR/config.yaml` as the base with `-c` overlaid on top, so the wrapper sets `BEETSDIR=lathe/ingest/beets` and passes `testdata/beets/config-test.yaml` as the overlay, which replaces only the three paths.
 

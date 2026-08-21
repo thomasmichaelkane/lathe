@@ -24,7 +24,10 @@ match:
     missing_tracks: low
     unmatched_tracks: low
 
-plugins: fetchart replaygain scrub lastgenre missing edit inline
+# 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
+# into a plugin. Omit it and every import silently finds no match and falls
+# through to quiet_fallback: skip. It was implicit in 1.6.
+plugins: musicbrainz fetchart replaygain scrub lastgenre missing edit inline
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -41,7 +44,11 @@ paths:
 fetchart:
   auto: yes
   cautious: yes
-  sources: filesystem coverart itunes albumart
+  sources:                # beets 2.x requires list form here;
+    - filesystem         # the old space-separated string is rejected
+    - coverart
+    - itunes
+    - albumart
   filename: cover        # always cover.jpg — one image, one name
 
 replaygain:
