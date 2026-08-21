@@ -15,6 +15,33 @@ import:
   incremental: yes
   log: /srv/logs/beets-import.log
 
+# Both metadata sources have their data-source mismatch penalty zeroed.
+#
+# beets 2.x (autotag/distance.py, add_data_source) applies a 0.5 penalty to any
+# candidate whose data_source differs from the file's existing `data_source`
+# tag — but ONLY once more than one metadata source plugin is loaded:
+#
+#     if before != after and (before or len(find_metadata_source_plugins()) > 1)
+#
+# Fresh downloads and rips have no `data_source` tag, so `before` is empty and
+# EVERY candidate from EVERY source is penalised. With one source the guard is
+# false and nothing is penalised, which is why adding beetcamp silently broke a
+# previously-perfect match: MusicBrainz went 0.00 -> 0.12, over
+# strong_rec_thresh, so quiet_fallback: skip quarantined it. Left unfixed with
+# two sources loaded, nothing ever reaches 0.04 and the whole library
+# quarantines.
+#
+# Zeroing both is right rather than merely symmetric: match quality is what we
+# want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able to
+# win outright, which a 0.5 penalty would prevent. MusicBrainz still wins on
+# merit where it has the release — verified 2026-08-21, MB 0.00 vs Bandcamp
+# 0.12 on the same album.
+musicbrainz:
+  data_source_mismatch_penalty: 0.0
+
+bandcamp:
+  data_source_mismatch_penalty: 0.0
+
 match:
   # DISTANCE threshold, not a confidence score: beets auto-accepts matches
   # scoring BELOW this value. Lower is stricter. 0.04 is the beets default.
@@ -27,7 +54,11 @@ match:
 # 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
 # into a plugin. Omit it and every import silently finds no match and falls
 # through to quiet_fallback: skip. It was implicit in 1.6.
-plugins: musicbrainz fetchart replaygain scrub lastgenre missing edit inline
+# 'bandcamp' (beetcamp) is a second autotagger source. Bandcamp edits,
+# bootlegs and unofficial remixes are largely absent from MusicBrainz, so
+# without it a real chunk of a download-based collection can never match
+# and quarantines permanently. It is consulted alongside MB, not instead.
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -36,16 +67,22 @@ plugins: musicbrainz fetchart replaygain scrub lastgenre missing edit inline
 item_fields:
   multidisc: 1 if disctotal > 1 else ''
 
+# No `singleton:` template. Nothing in the pipeline ever passes `beet import
+# -s`, so it was unreachable; and a singleton files with no cover.jpg, which
+# breaks the one-folder-one-cover rule. A single is a one-track *release* and
+# goes through `default:` like everything else.
 paths:
   default: $albumartist/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
   comp: Various Artists/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
-  singleton: $artist/$title/01 $title
 
 fetchart:
   auto: yes
   cautious: yes
   sources:                # beets 2.x requires list form here;
     - filesystem         # the old space-separated string is rejected
+    - cover_art_url      # beetcamp sets album.cover_art_url; this core source
+                         # consumes it. beetcamp's own 'Bandcamp' source is NOT
+                         # a valid key here — fetchart rejects it at startup.
     - coverart
     - itunes
     - albumart

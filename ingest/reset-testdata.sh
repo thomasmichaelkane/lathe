@@ -38,7 +38,8 @@ done
 
 # Both, always. Removing only the db leaves the incremental state behind and
 # every later import skips everything as "previously-imported".
-rm -f "$BEETSDB" "$BEETSSTATE"
+# The .bak files are schema-migration backups beets writes on each new db.
+rm -f "$BEETSDB" "$BEETSSTATE" "$BEETSDB"-*.bak
 
 # Re-copy the pristine originals into staging for beets to consume.
 cp -a "$ORIGINALS"/. "$STAGING"/
