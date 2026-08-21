@@ -1,0 +1,23 @@
+# Trigger a rip when an audio CD is inserted.
+#
+# Deployed to /etc/udev/rules.d/99-autorip.rules, then:
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=block
+#
+# ACTION=="change" is correct here, not "add": the drive itself appears at boot,
+# and it is the media insertion that raises a change event.
+#
+# ID_CDROM_MEDIA_TRACK_COUNT_AUDIO=="?*" means "has at least one audio track",
+# so data discs, DVDs and blank media are ignored silently rather than kicking
+# off a rip that produces nothing.
+#
+# TAG+="systemd" plus SYSTEMD_WANTS hands off to a service. Do NOT be tempted to
+# use RUN+= — udev kills anything still running when the event handler returns,
+# so a rip started that way dies partway through. See §12 of docs/plan.md.
+#
+# Debug with:  udevadm monitor --property --subsystem-match=block
+#              udevadm info --query=property --name=/dev/sr0
+
+ACTION=="change", KERNEL=="sr[0-9]", SUBSYSTEM=="block", \
+  ENV{ID_CDROM_MEDIA_TRACK_COUNT_AUDIO}=="?*", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}="autorip@%k.service"

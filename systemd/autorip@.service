@@ -1,0 +1,35 @@
+# Rips an audio CD and hands it to the ingest pipeline.
+#
+# Templated on the kernel device name, so %i is sr0, sr1, ... A second drive
+# gets its own instance and its own work directory — see autorip.sh.
+#
+# Started by the udev rule in 99-autorip.rules. udev's RUN+= kills long-running
+# processes when the event handler returns, which is why the rule dispatches to
+# systemd instead of running the script itself. Non-negotiable — §12.
+#
+# There is deliberately NO ordering against inbox.path. The two units know
+# nothing about each other; the atomic move into /srv/inbox is the entire
+# interface between them (§6.5).
+
+[Unit]
+Description=Auto-rip audio CD on %i
+
+[Service]
+Type=oneshot
+User=music
+Group=music
+
+# NTFY_URL lives here rather than in the unit so the topic isn't committed to
+# the repo. The leading '-' means the file is optional: with no topic set,
+# autorip.sh logs failures to the journal and pushes nothing.
+EnvironmentFile=-/etc/default/autorip
+
+ExecStart=/usr/local/bin/autorip.sh %i
+
+# A full disc is 5-10 minutes; an hour is generous headroom for a slow drive
+# retrying a marginal disc.
+TimeoutStartSec=3600
+
+# A rip in progress must never make playback stutter.
+Nice=10
+IOSchedulingClass=idle

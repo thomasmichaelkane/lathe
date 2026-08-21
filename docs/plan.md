@@ -240,7 +240,13 @@ CDPARANOIAOPTS="-Z"
 
 ACTIONS=cddb,read,encode,tag,move,clean
 INTERACTIVE=n
-EJECTCD=y
+
+# Deliberately not EJECTCD=y. autorip.sh ejects, and only after the album has
+# been moved into /srv/inbox — see §6.4. If abcde ejected on its own the tray
+# would open before the hand-off, and a failed move would look exactly like a
+# success.
+EJECTCD=n
+
 MAXPROCS=4
 
 OUTPUTFORMAT='${ARTISTFILE}/${ALBUMFILE}/${TRACKNUM} ${TRACKFILE}'
@@ -248,6 +254,12 @@ VAOUTPUTFORMAT='Various/${ALBUMFILE}/${TRACKNUM} ${ARTISTFILE} - ${TRACKFILE}'
 ```
 
 **The tradeoff you accepted:** `-Z` disables paranoia retries. A scratched disc rips fast but may contain silent errors. Mitigation: `autorip.sh` captures cdparanoia's stderr per disc into `/srv/logs/rips/`, and flags any disc that reported read errors so the custom API can surface it for a manual re-rip.
+
+`autorip.sh` layers a small per-run config over this with `abcde -c`, setting
+`OUTPUTDIR` to a work directory unique to that disc. Two drives ripping at once
+therefore cannot land in the same tree, and the finished album is found by
+listing that directory rather than by reproducing abcde's naming rules in the
+script.
 
 `MAXPROCS=4` uses all four Pi cores for FLAC encoding. Encoding will finish before reading does, so ripping is drive-bound, roughly 5–10 minutes per disc.
 
@@ -389,6 +401,15 @@ Putting both on the ingest side means all three entry points get them. Under
 the previous design only rips poked Navidrome, so a manual drop or an approved
 fetch stayed invisible until the next scheduled scan — a bug avoided here by
 accident.
+
+**Failure is the exception, and it belongs to the ripper.** A rip that never
+reaches the inbox is something `inbox-import.sh` will never see and therefore
+can never report — it would simply be silent. So `autorip.sh` sends its own
+ntfy push when abcde exits non-zero, produces no audio, or produces something
+other than the one album directory expected, and it keeps the work directory
+for inspection instead of cleaning up. That is the only push it sends: the
+consumer announces success, the producer announces the failures the consumer
+cannot know about.
 
 Two consequences to expect. The notification is now **per import run, not per
 album**: a stack of CDs ripped back to back collapses into one push covering
@@ -860,7 +881,16 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 
 **Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the collection into `/srv/inbox/` and let beets file it.
 
-**Blocked until hardware:** NVMe boot, the udev rule, `autorip.sh`, `/etc/abcde.conf`, anything touching `/dev/sr0`.
+**Blocked until hardware:** NVMe boot, and anything that actually touches
+`/dev/sr0` — abcde's real output layout, the MusicBrainz disc-ID lookup, the
+read-error patterns, eject, and the udev rule firing on media insertion.
+
+`autorip.sh`, `abcde.conf`, `autorip@.service` and `99-autorip.rules` are
+written, and `autorip-test.sh` covers everything downstream of the rip against
+a temporary tree: album location, destination naming, collisions, awkward
+characters, the atomic-move guard, the JSON log, and the failure paths. The rip
+step is stubbed. That is the half where the bugs live and it does not need a
+drive; the half that does is small and mostly config.
 
 ### Phase 0 — Base
 - Flash Pi OS Lite 64-bit to microSD, boot, update
@@ -888,6 +918,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - `/srv/inbox/` path unit + `inbox-import.sh` **first** — it is the consumer everything else feeds (settle wait, quarantine sweep, ntfy, Navidrome rescan poke)
 - `autorip.sh`, the systemd template unit, the udev rule
 - Per-disc logging, error detection, atomic hand-off into `/srv/inbox/`, auto-eject
+- Verify the read-error grep patterns in `autorip.sh` against a **deliberately scratched disc**. `autorip-test.sh` stubs the rip, so a pattern that never matches is indistinguishable from a clean rip until a real bad disc proves otherwise.
 - `lint.py` (§6.6) + nightly timer
 - **Done when:** insert disc, walk away, get a phone notification, album is in the library — and the linter reports zero violations
 
