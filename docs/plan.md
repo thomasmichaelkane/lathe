@@ -520,6 +520,14 @@ half-releases, and see below for why those can never import.
 
 ### 6.3a Multi-disc CDs — the ripper produces one disc at a time
 
+> **Deferred (2026-08-21).** Design only — nothing here is implemented, and
+> none of it blocks Phase −1. It needs the optical drive to build or test, and
+> `autorip.sh` does not exist yet. The `multidisc` path template it feeds is
+> already verified on both branches (§6.3), so the *library layout* is proven;
+> what is unproven is the staging logic below. Revisit when the hardware
+> arrives, alongside the rest of `autorip.sh`.
+
+
 This is the case that makes `multidisc` fiddly, and it is not about folder
 layout. A multi-disc set is ripped one disc per insertion, so without
 intervention each disc reaches `/srv/inbox/` as its own import task, minutes or
