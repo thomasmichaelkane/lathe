@@ -15,7 +15,7 @@ import:
   incremental: yes
   log: /srv/logs/beets-import.log
 
-# Both metadata sources have their data-source mismatch penalty zeroed.
+# Both metadata sources override their data-source mismatch penalty.
 #
 # beets 2.x (autotag/distance.py, add_data_source) applies a 0.5 penalty to any
 # candidate whose data_source differs from the file's existing `data_source`
@@ -31,16 +31,24 @@ import:
 # two sources loaded, nothing ever reaches 0.04 and the whole library
 # quarantines.
 #
-# Zeroing both is right rather than merely symmetric: match quality is what we
-# want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able to
-# win outright, which a 0.5 penalty would prevent. MusicBrainz still wins on
-# merit where it has the release — verified 2026-08-21, MB 0.00 vs Bandcamp
-# 0.12 on the same album.
+# Overriding both is right rather than merely symmetric: match quality is what
+# we want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able
+# to win outright, which a 0.5 penalty would prevent. See each source below for
+# why MusicBrainz is 0.0 and Bandcamp is a small non-zero value.
 musicbrainz:
   data_source_mismatch_penalty: 0.0
 
 bandcamp:
-  data_source_mismatch_penalty: 0.0
+  # Deliberately a small non-zero value, not 0.0. With both sources at 0.0 a
+  # release present in both scores 0.00 twice and Bandcamp wins the tie by
+  # ordering — and beetcamp writes Bandcamp URLs into MUSICBRAINZ_ALBUMID /
+  # MUSICBRAINZ_TRACKID, so the real MBIDs are lost from the archive masters.
+  #
+  # This penalty lands on the data_source key at both album and track level,
+  # which normalises to roughly the penalty value itself as a total distance.
+  # 0.02 therefore keeps Bandcamp-only releases comfortably under
+  # strong_rec_thresh (0.04) while letting MusicBrainz win any tie.
+  data_source_mismatch_penalty: 0.02
 
 match:
   # DISTANCE threshold, not a confidence score: beets auto-accepts matches
@@ -58,7 +66,13 @@ match:
 # bootlegs and unofficial remixes are largely absent from MusicBrainz, so
 # without it a real chunk of a download-based collection can never match
 # and quarantines permanently. It is consulted alongside MB, not instead.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
+plugins: musicbrainz bandcamp bandcamp_datasource_case fetchart replaygain scrub lastgenre missing edit inline
+
+# Local plugin dir. beets resolves pluginpath against the CWD, not the config
+# directory, so it must be absolute — the test overlay replaces this the same
+# way it replaces `directory` and `library`.
+pluginpath:
+  - /srv/config/beets/plugins
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
