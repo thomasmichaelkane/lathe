@@ -19,6 +19,7 @@ LIBRARY="$TESTDATA/library"
 QUARANTINE="$TESTDATA/quarantine"
 LOGS="$TESTDATA/logs"
 BEETSDB="$TESTDATA/beets/library.db"
+BEETSSTATE="$TESTDATA/beets/state.pickle"
 
 if [ ! -d "$ORIGINALS" ] || [ -z "$(ls -A "$ORIGINALS" 2>/dev/null)" ]; then
   echo "error: $ORIGINALS is empty." >&2
@@ -35,7 +36,10 @@ for d in "$STAGING" "$LIBRARY" "$QUARANTINE" "$LOGS"; do
   mkdir -p "$d"
 done
 
-rm -f "$BEETSDB"
+# Both, always. Removing only the db leaves the incremental state behind and
+# every later import skips everything as "previously-imported".
+# The .bak files are schema-migration backups beets writes on each new db.
+rm -f "$BEETSDB" "$BEETSSTATE" "$BEETSDB"-*.bak
 
 # Re-copy the pristine originals into staging for beets to consume.
 cp -a "$ORIGINALS"/. "$STAGING"/
@@ -45,7 +49,7 @@ tracks=$(find "$STAGING" -type f \( -iname '*.flac' -o -iname '*.mp3' -o -iname 
 
 echo "  staging:  $albums top-level entries, $tracks audio files"
 echo "  library:  emptied"
-echo "  beets db: removed"
+echo "  beets db: removed (db + incremental state)"
 echo
 echo "Next:"
 echo "  ./lathe/ingest/beet-test.sh import $STAGING"

@@ -128,6 +128,11 @@ the **same beets import as everything else** — same matching, same thresholds,
 same `quiet_fallback: skip`, and into quarantine if beets is unsure. No second
 ingest pipeline, and no new systemd units on the `lathe` side.
 
+Rips arrive the same way. `autorip.sh` is a producer too: it writes FLACs and
+moves them into `/srv/inbox/`, and never runs beets itself (§6.2 of
+`plan.md`). All three entry points end in an atomic move into the inbox, which
+is what makes "the filesystem is the API" a real rule rather than a slogan.
+
 Proposed `libraryd` endpoints (see §10 of `plan.md`):
 
 | Method | Path |
