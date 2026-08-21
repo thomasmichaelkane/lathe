@@ -252,42 +252,15 @@ import:
   quiet: yes
   quiet_fallback: skip     # the safety valve — never guess, leave it in place
   incremental: yes
+  # LOAD-BEARING, and coupled to the two-pass import in inbox-import.sh.
+  # At its default (`no`), beets records SKIPPED directories to the incremental
+  # history as well as imported ones (importer/tasks.py, ImportTask.finalize).
+  # Pass 1 (MusicBrainz) would therefore mark everything it could not match as
+  # "seen", and pass 2 (Bandcamp) would skip all of it — the second pass would
+  # silently do nothing while still exiting 0. Do not set this back to `no`
+  # without collapsing the cascade back to a single pass.
+  incremental_skip_later: yes
   log: /srv/logs/beets-import.log
-
-# Both metadata sources override their data-source mismatch penalty.
-#
-# beets 2.x (autotag/distance.py, add_data_source) applies a 0.5 penalty to any
-# candidate whose data_source differs from the file's existing `data_source`
-# tag — but ONLY once more than one metadata source plugin is loaded:
-#
-#     if before != after and (before or len(find_metadata_source_plugins()) > 1)
-#
-# Fresh downloads and rips have no `data_source` tag, so `before` is empty and
-# EVERY candidate from EVERY source is penalised. With one source the guard is
-# false and nothing is penalised, which is why adding beetcamp silently broke a
-# previously-perfect match: MusicBrainz went 0.00 -> 0.12, over
-# strong_rec_thresh, so quiet_fallback: skip quarantined it. Left unfixed with
-# two sources loaded, nothing ever reaches 0.04 and the whole library
-# quarantines.
-#
-# Overriding both is right rather than merely symmetric: match quality is what
-# we want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able
-# to win outright, which a 0.5 penalty would prevent. See each source below for
-# why MusicBrainz is 0.0 and Bandcamp is a small non-zero value.
-musicbrainz:
-  data_source_mismatch_penalty: 0.0
-
-bandcamp:
-  # Deliberately a small non-zero value, not 0.0. With both sources at 0.0 a
-  # release present in both scores 0.00 twice and Bandcamp wins the tie by
-  # ordering — and beetcamp writes Bandcamp URLs into MUSICBRAINZ_ALBUMID /
-  # MUSICBRAINZ_TRACKID, so the real MBIDs are lost from the archive masters.
-  #
-  # This penalty lands on the data_source key at both album and track level,
-  # which normalises to roughly the penalty value itself as a total distance.
-  # 0.02 therefore keeps Bandcamp-only releases comfortably under
-  # strong_rec_thresh (0.04) while letting MusicBrainz win any tie.
-  data_source_mismatch_penalty: 0.02
 
 match:
   # DISTANCE threshold, not a confidence score: beets auto-accepts matches
@@ -301,17 +274,15 @@ match:
 # 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
 # into a plugin. Omit it and every import silently finds no match and falls
 # through to quiet_fallback: skip. It was implicit in 1.6.
-# 'bandcamp' (beetcamp) is a second autotagger source. Bandcamp edits,
-# bootlegs and unofficial remixes are largely absent from MusicBrainz, so
-# without it a real chunk of a download-based collection can never match
-# and quarantines permanently. It is consulted alongside MB, not instead.
-plugins: musicbrainz bandcamp bandcamp_datasource_case fetchart replaygain scrub lastgenre missing edit inline
-
-# Local plugin dir. beets resolves pluginpath against the CWD, not the config
-# directory, so it must be absolute — the test overlay replaces this the same
-# way it replaces `directory` and `library`.
-pluginpath:
-  - /srv/config/beets/plugins
+# Both metadata sources are listed here, but inbox-import.sh never runs them
+# together: it imports twice, disabling one each time with `beet -P`, so
+# MusicBrainz gets first refusal and Bandcamp only sees what it could not
+# match. See the cascade note in docs/plan.md 6.3 for why.
+#
+# 'bandcamp' (beetcamp) is not optional for a download-based collection:
+# Bandcamp edits, bootlegs and unofficial remixes are largely absent from
+# MusicBrainz and can never match without it.
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty
@@ -372,16 +343,27 @@ Both branches behave, the leading space after the comma is preserved (it's what 
 
 Test the branches by flipping the *condition* (`> 1` vs `>= 1`), not by substituting a bare literal. `item_fields` values are Python expression bodies, and the `inline` plugin fails to load on a bare `1` or `0` — a substitution test looks like it ran and proves nothing.
 
-### Two metadata sources, and the penalty that breaks them
+### Two metadata sources, imported in two passes
 
-`bandcamp` (beetcamp) runs alongside `musicbrainz`. It is not optional for a
-download-based collection: Bandcamp edits, bootlegs and unofficial remixes are
-largely absent from MusicBrainz, and without it they can never match and
-quarantine permanently.
+`bandcamp` (beetcamp) is configured alongside `musicbrainz`, but **they are
+never loaded at the same time**. `inbox-import.sh` imports twice, disabling one
+source per pass with `beet -P`:
 
-Adding it has one non-obvious consequence, verified 2026-08-21. beets penalises
-any candidate whose `data_source` differs from the file's existing tag, but only
-once a *second* metadata source plugin loads:
+```sh
+beet -c "$BEETS_CONFIG" -P bandcamp    import "$INBOX"   # MusicBrainz first
+beet -c "$BEETS_CONFIG" -P musicbrainz import "$INBOX"   # then the remainder
+```
+
+`-P/--disable-plugins` subtracts from the configured list, so both passes keep
+`fetchart`, `replaygain`, `scrub` and the rest. (`-p/--plugins` *replaces* the
+list and would silently drop them.) `import.move: yes` means pass 1 physically
+removes what it matched, so pass 2 only ever sees leftovers.
+
+Bandcamp is not optional for a download-based collection: edits, bootlegs and
+unofficial remixes are largely absent from MusicBrainz and can never match
+without it. But running the two sources *together* is actively broken. beets
+penalises any candidate whose `data_source` differs from the file's existing
+tag, and the guard is on the number of loaded plugins, not on the candidates:
 
 ```python
 # beets/autotag/distance.py — add_data_source
@@ -389,30 +371,56 @@ if before != after and (before or len(find_metadata_source_plugins()) > 1):
     self.add("data_source", metadata_plugins.get_penalty(after))
 ```
 
-Fresh downloads have no `data_source` tag, so `before` is empty and every
-candidate from every source takes the default **0.5**. It applies per album
-*and* per track, so on a 13-track release a byte-perfect match scored 0.1125
-instead of 0.0000 and quarantined. With the default left in place and two
-sources loaded, nothing reaches `strong_rec_thresh` and the whole library
-quarantines.
+Fresh downloads have no `data_source` tag, so `before` is empty and **every**
+candidate from **every** source takes the default 0.5 — per album *and* per
+track. Measured 2026-08-21: a byte-perfect 13-track Bandcamp release scored
+0.1125 instead of 0.0000 and quarantined, with `data_source: 0.5` as the only
+penalty on every single track. With both sources loaded and the default in
+place, nothing reaches `strong_rec_thresh` and the whole library quarantines.
 
-`get_penalty` resolves the configured value by matching the candidate's
-`data_source` against each plugin's. beetcamp disagrees with itself about the
-case — `DATA_SOURCE = "bandcamp"` on the metadata it produces,
-`data_source = "Bandcamp"` on the plugin — so the lookup misses, falls back to
-the hardcoded 0.5, and `bandcamp.data_source_mismatch_penalty` has no effect at
-all. `ingest/beets/plugins/bandcamp_datasource_case.py` normalises the casing.
-It must walk `AlbumInfo.tracks` explicitly: nested `TrackInfo` objects never
-fire `trackinfo_received`, and they carry most of the penalty.
+Splitting the passes means one metadata source plugin is loaded at a time, the
+guard is false, and the penalty never applies at all — verified: single-source
+matching produces `keys=[]`, no penalty keys whatsoever. That is why the
+cascade is the fix rather than tuning the penalty around it. An earlier attempt
+did tune it, and needed a local plugin to work around beetcamp disagreeing with
+itself about case (`DATA_SOURCE = "bandcamp"` on the metadata it produces vs
+`data_source = "Bandcamp"` on the plugin, which makes
+`bandcamp.data_source_mismatch_penalty` silently inert). The two-pass form
+deletes that plugin and both tuned constants.
 
-Bandcamp keeps a small non-zero penalty rather than 0.0 so that MusicBrainz wins
-ties. beetcamp writes Bandcamp **URLs** into `MUSICBRAINZ_ALBUMID` and
-`MUSICBRAINZ_TRACKID`, so a tie lost to Bandcamp costs the real MBIDs that
-Navidrome and ListenBrainz rely on.
+It also means MusicBrainz wins whenever it has the release **by construction**
+rather than by a tie-break — which matters, because beetcamp writes Bandcamp
+**URLs** into `MUSICBRAINZ_ALBUMID` and `MUSICBRAINZ_TRACKID`. And Bandcamp is
+only queried for what MusicBrainz could not match.
 
-> **Open:** for Bandcamp-*only* releases those fields still hold a URL rather
-> than a UUID. Decide whether to clear them, or relocate the URL to a flexible
-> field, before the collection is imported for real.
+**Two settings are load-bearing for this and must not drift:**
+
+`incremental_skip_later: yes`. At its default, beets records *skipped*
+directories to the incremental history as well as imported ones
+(`importer/tasks.py`, `ImportTask.finalize`). Pass 1 would mark everything it
+could not match as seen, and pass 2 would skip all of it — doing nothing while
+still exiting 0. `import-testdata.sh` refuses to run if this is not set.
+
+The **MusicBrainz-unreachable abort**. A network failure is not an import
+failure to beets: it logs the error, skips the album, and `beet import` still
+exits 0. Harmless in a single-pass setup — the album quarantines and you retry.
+Under the cascade it is corrupting, because pass 2 then matches everything from
+Bandcamp and files MusicBrainz-catalogued releases with bandcamp.com URLs in
+their MBID fields, `incremental` records them as done, and the real MBIDs are
+gone from the archive masters. So pass 1's output is scanned for MusicBrainz
+errors, and on a hit the run aborts *before* pass 2 and before the quarantine
+sweep, leaving the inbox exactly as it was. This is not theoretical: it fired
+during testing when musicbrainz.org was answering in ~22s against beets' 10s
+read timeout, and both albums were filed as Bandcamp releases before the guard
+existed.
+
+**`autorip.sh` must use the same two passes**, for the same reasons. A CD rip
+has no `data_source` tag either.
+
+> **Open:** for Bandcamp-*only* releases, `MUSICBRAINZ_ALBUMID` and
+> `MUSICBRAINZ_TRACKID` hold a bandcamp.com URL rather than a UUID. Decide
+> whether to clear them, or relocate the URL to a flexible field, before the
+> collection is imported for real.
 
 **Deliberately not using the `chroma` (AcoustID fingerprinting) plugin.** It's slow on ARM and CDs have a reliable disc ID already. Add it later only for the `/srv/inbox/` path where files arrive without disc IDs.
 
@@ -816,7 +824,15 @@ testdata/
 
 **`incremental: yes` state does not live in `library.db`.** beets keeps the set of already-imported paths in a `state.pickle` next to the config, so deleting the database resets nothing — every import after the first reports `Skipping previously-imported path` and exits 0, and you can spend an afternoon "tuning templates" while running no imports at all. The test overlay pins `statefile:` into `testdata/beets/` and `reset-testdata.sh` deletes it alongside the db. Left at its default it lands inside the `lathe` repo (gitignored, but still the wrong place).
 
-**Config layering — use `lathe/ingest/beet-test.sh`, don't call `beet` directly.** The test setup must run the *real* production config so that what gets tuned is what ships. beets layers `$BEETSDIR/config.yaml` as the base with `-c` overlaid on top, so the wrapper sets `BEETSDIR=lathe/ingest/beets` and passes `testdata/beets/config-test.yaml` as the overlay, which replaces only the three paths.
+**Two harness entry points.** `lathe/ingest/import-testdata.sh` is the one to
+use for import runs: it invokes the *real* `inbox-import.sh` with the test paths
+injected as environment variables, so the two-pass cascade under test is
+literally the code that ships rather than a copy of it that can drift. It
+inherits `inbox-import.sh`'s quarantine sweep too, so the whole flow is
+exercised end to end. `lathe/ingest/beet-test.sh` stays for ad-hoc single
+commands — `ls`, `config`, a one-off `import` while tuning a template.
+
+**Config layering — use those wrappers, don't call `beet` directly.** The test setup must run the *real* production config so that what gets tuned is what ships. beets layers `$BEETSDIR/config.yaml` as the base with `-c` overlaid on top, so the wrapper sets `BEETSDIR=lathe/ingest/beets` and passes `testdata/beets/config-test.yaml` as the overlay, which replaces only the three paths.
 
 > **beets has no `include:` directive.** It accepts the key, ignores it, and reads nothing — no warning, no error. An earlier draft of this plan assumed otherwise and the test config silently contained *only* the path overrides: no plugins, no path templates, no match thresholds. Verified against beets 1.6.0. `beet-test.sh` asserts `strong_rec_thresh` is present in the merged config and that `directory` points inside `testdata/`, and refuses to run otherwise — the second check exists so a broken overlay can never write into a real music directory.
 

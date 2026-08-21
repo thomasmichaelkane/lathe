@@ -13,42 +13,15 @@ import:
   quiet: yes
   quiet_fallback: skip     # the safety valve — never guess, leave it in place
   incremental: yes
+  # LOAD-BEARING, and coupled to the two-pass import in inbox-import.sh.
+  # At its default (`no`), beets records SKIPPED directories to the incremental
+  # history as well as imported ones (importer/tasks.py, ImportTask.finalize).
+  # Pass 1 (MusicBrainz) would therefore mark everything it could not match as
+  # "seen", and pass 2 (Bandcamp) would skip all of it — the second pass would
+  # silently do nothing while still exiting 0. Do not set this back to `no`
+  # without collapsing the cascade back to a single pass.
+  incremental_skip_later: yes
   log: /srv/logs/beets-import.log
-
-# Both metadata sources override their data-source mismatch penalty.
-#
-# beets 2.x (autotag/distance.py, add_data_source) applies a 0.5 penalty to any
-# candidate whose data_source differs from the file's existing `data_source`
-# tag — but ONLY once more than one metadata source plugin is loaded:
-#
-#     if before != after and (before or len(find_metadata_source_plugins()) > 1)
-#
-# Fresh downloads and rips have no `data_source` tag, so `before` is empty and
-# EVERY candidate from EVERY source is penalised. With one source the guard is
-# false and nothing is penalised, which is why adding beetcamp silently broke a
-# previously-perfect match: MusicBrainz went 0.00 -> 0.12, over
-# strong_rec_thresh, so quiet_fallback: skip quarantined it. Left unfixed with
-# two sources loaded, nothing ever reaches 0.04 and the whole library
-# quarantines.
-#
-# Overriding both is right rather than merely symmetric: match quality is what
-# we want to rank on, and Bandcamp-only releases (edits, bootlegs) must be able
-# to win outright, which a 0.5 penalty would prevent. See each source below for
-# why MusicBrainz is 0.0 and Bandcamp is a small non-zero value.
-musicbrainz:
-  data_source_mismatch_penalty: 0.0
-
-bandcamp:
-  # Deliberately a small non-zero value, not 0.0. With both sources at 0.0 a
-  # release present in both scores 0.00 twice and Bandcamp wins the tie by
-  # ordering — and beetcamp writes Bandcamp URLs into MUSICBRAINZ_ALBUMID /
-  # MUSICBRAINZ_TRACKID, so the real MBIDs are lost from the archive masters.
-  #
-  # This penalty lands on the data_source key at both album and track level,
-  # which normalises to roughly the penalty value itself as a total distance.
-  # 0.02 therefore keeps Bandcamp-only releases comfortably under
-  # strong_rec_thresh (0.04) while letting MusicBrainz win any tie.
-  data_source_mismatch_penalty: 0.02
 
 match:
   # DISTANCE threshold, not a confidence score: beets auto-accepts matches
@@ -62,17 +35,15 @@ match:
 # 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
 # into a plugin. Omit it and every import silently finds no match and falls
 # through to quiet_fallback: skip. It was implicit in 1.6.
-# 'bandcamp' (beetcamp) is a second autotagger source. Bandcamp edits,
-# bootlegs and unofficial remixes are largely absent from MusicBrainz, so
-# without it a real chunk of a download-based collection can never match
-# and quarantines permanently. It is consulted alongside MB, not instead.
-plugins: musicbrainz bandcamp bandcamp_datasource_case fetchart replaygain scrub lastgenre missing edit inline
-
-# Local plugin dir. beets resolves pluginpath against the CWD, not the config
-# directory, so it must be absolute — the test overlay replaces this the same
-# way it replaces `directory` and `library`.
-pluginpath:
-  - /srv/config/beets/plugins
+# Both metadata sources are listed here, but inbox-import.sh never runs them
+# together: it imports twice, disabling one each time with `beet -P`, so
+# MusicBrainz gets first refusal and Bandcamp only sees what it could not
+# match. See the cascade note in docs/plan.md 6.3 for why.
+#
+# 'bandcamp' (beetcamp) is not optional for a download-based collection:
+# Bandcamp edits, bootlegs and unofficial remixes are largely absent from
+# MusicBrainz and can never match without it.
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline
 
 # Splits multi-disc sets into one release per disc.
 # Returns '' rather than 0 for single-disc releases: %if{} treats the empty

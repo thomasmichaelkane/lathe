@@ -52,4 +52,7 @@ echo "  library:  emptied"
 echo "  beets db: removed (db + incremental state)"
 echo
 echo "Next:"
-echo "  ./lathe/ingest/beet-test.sh import $STAGING"
+echo "  ./lathe/ingest/import-testdata.sh"
+echo
+echo "(that runs the real inbox-import.sh — two passes, MusicBrainz then"
+echo " Bandcamp. Use beet-test.sh for ad-hoc queries like 'ls' or 'config'.)"
