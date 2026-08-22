@@ -46,7 +46,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively. Deadwax implements nothing — see §9. |
 | **App philosophy** | **Album/EP only.** No playlists, no autoplay, no track shuffle | The queue *is* the album. Collapses the fiddliest part of any player. |
 | Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
-| Multi-disc releases | **One release per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule. Letting them quarantine costs a minute per box set and needs no stateful ripper |
+| Multi-disc releases | **One folder per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule, and clients still present it as *one album with disc sections* — measured, §6.5a. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
 | Search | **Subsonic `search3`** only | Artist / album / track is all that's wanted. No custom index. |
 | Distribution | **Personal, but kept releasable** | No hardcoded server; spec-compliant, not Navidrome-specific |
@@ -797,6 +797,42 @@ Three properties it has deliberately:
 - **It never clobbers.** Same collision rule as `inbox-import.sh` — an existing
   destination gets a timestamp suffix rather than being overwritten.
 
+**What a merged set looks like in a client.** One album, with disc sections —
+not two albums, and not a flat run of tracks. **Measured on Navidrome 0.63.2
+(2026-08-22)**, against the exact layout the path template produces: two disc
+folders, identical `album`/`albumartist` tags, `disc` 1 and 2, `disctotal` 2.
+
+| On disk | Navidrome |
+|---|---|
+| `Karenn/Grapefruit Regret (Disc 01)/` + `(Disc 02)/` | one album, `songCount: 4`, `discTitles: [{disc 1}, {disc 2}]` |
+| same but with no `MUSICBRAINZ_ALBUMID` | identical — still one album |
+| `Someone/Just One Disc/` (control) | one album, `discTitles: []` |
+
+**Navidrome groups by tags, and folders are not part of album identity at all.**
+The clincher is that the `path` it reports over Subsonic is synthesised from
+tags — `Karenn/Grapefruit Regret/01-01 - ….flac`, with no `(Disc 01)` in it —
+rather than being the real path on disk. So the `(Disc 01)` suffix the
+`multidisc` template writes is cosmetic: it exists to keep one folder per
+release on disk (§6.3), and no client ever sees it.
+
+This is the actual argument for merging, and it is stronger than "so the
+folders are tidy". Two discs imported separately are **two independent
+MusicBrainz matches**, and each is a fresh chance to disagree about the album
+name, the release date, or the release MBID — and any of those disagreements
+splits the album in the UI. A merged set is *one* import task and therefore one
+tagging decision for every track in it, which is what makes the presentation
+correct by construction rather than by luck.
+
+> **Correction to §2 and §10.** "One release per disc" describes the *folder*
+> layout, not what gets presented — a tag-consistent set has always been one
+> album to a client. So `/releases/split` and `/releases/merge` in §10 do not do
+> what their names suggest: there is nothing to stitch together at the
+> presentation layer, because nothing was split. What can genuinely split an
+> album is *tags* — discs that imported separately and got different album
+> names or release MBIDs. If those endpoints survive, that is the problem they
+> should solve, and `/library/violations` (§6.6) is the more natural home for
+> detecting it.
+
 **`groups` is the part that saves the reading.** It proposes sets from three
 signals and labels which one it used, because they are not equally trustworthy:
 
@@ -1034,7 +1070,7 @@ The gap you're filling is specifically **album-first × Android × OpenSubsonic*
 1. **Setup** — server URL, username, password, connection test
 2. **Shelf** — artwork grid, the primary surface. Sort/filter control (newest, random, year, genre, artist, starred, EP vs album).
 3. **Artist** — that artist's releases, as artwork
-4. **Release** — large cover, tracklist, single Play button
+4. **Release** — large cover, tracklist, single Play button. **Group the tracklist by `discNumber` when there is more than one**, using `discTitles` from `getAlbum` for the headings — a merged box set arrives as one album with four discs' worth of tracks (§6.5a), and rendering that as an undivided list of 60 is the one place the album-as-queue philosophy needs a visual seam. The queue stays the whole release; only the *display* is sectioned.
 5. **Search** — one field, results grouped by artist / release / track
 6. **Now Playing** — cover dominant, position within the *album* as well as the track, transport, star
 7. **Settings** — transcoding quality by network type, cache size, ListenBrainz, logout
@@ -1106,8 +1142,8 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 | GET | `/library/violations` | Lint results from §6.6 — junk files, artwork problems, metadata gaps |
 | POST | `/library/lint` | Run the linter now |
 | POST | `/library/fix` | Apply only the safe auto-fixes (junk deletion, empty folders) |
-| GET | `/releases/split` | Multi-disc sets currently living as separate releases |
-| POST | `/releases/merge` | Merge `Album (Disc 1)` + `(Disc 2)` into one presented release |
+| GET | `/releases/split` | Sets whose discs got *different album tags* and so present as separate albums — **not** merely one folder per disc, see §6.5a |
+| POST | `/releases/merge` | Reconcile those tags onto one release |
 | POST | `/library/rescan` | Trigger Navidrome scan |
 | POST | `/eject` | Eject the tray remotely |
 | GET | `/stats` | Album count, total size, rips per month, top artists |
