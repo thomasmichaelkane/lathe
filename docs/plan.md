@@ -46,7 +46,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively. Deadwax implements nothing — see §9. |
 | **App philosophy** | **Album/EP only.** No playlists, no autoplay, no track shuffle | The queue *is* the album. Collapses the fiddliest part of any player. |
 | Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
-| Multi-disc releases | **One release per disc**, merge endpoint later | Preserves the one-folder rule; merging is a v2 nicety |
+| Multi-disc releases | **One release per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
 | Search | **Subsonic `search3`** only | Artist / album / track is all that's wanted. No custom index. |
 | Distribution | **Personal, but kept releasable** | No hardcoded server; spec-compliant, not Navidrome-specific |
@@ -578,12 +578,25 @@ half-releases, and see below for why those can never import.
 
 ### 6.3a Multi-disc CDs — the ripper produces one disc at a time
 
-> **Deferred (2026-08-21).** Design only — nothing here is implemented, and
-> none of it blocks Phase −1. It needs the optical drive to build or test, and
-> `autorip.sh` does not exist yet. The `multidisc` path template it feeds is
-> already verified on both branches (§6.3), so the *library layout* is proven;
-> what is unproven is the staging logic below. Revisit when the hardware
-> arrives, alongside the rest of `autorip.sh`.
+> **Deferred (2026-08-21), and now superseded for v1 (2026-08-22).** The
+> staging design below is unimplemented and stays that way. Multi-disc rips are
+> allowed to quarantine, and `quarantine.py merge` (§6.5a) puts them back
+> together — one command per box set, no state in the ripper. Keep this section
+> as the design to reach for if manual merging turns out to be tedious enough
+> to be worth automating.
+>
+> **Why the cheap answer wins here.** Everything below only pays off if box
+> sets are common; a set that never gets its remaining discs still needs the
+> ageing-out sweeper, `libraryd` still has to show pending sets, and the
+> notification becomes stateful — that is three moving parts, all of which fail
+> *silently* by leaving music in staging. Quarantine already fails loudly, is
+> already swept, already reviewed, and is where a half-ripped set would end up
+> anyway. So the merge tool is not the fallback for the staging design; it is
+> the thing that makes the staging design optional.
+>
+> What is unaffected either way: the `multidisc` path template is verified on
+> both branches (§6.3), so the *library layout* is proven, and a merged set
+> imports through the normal pipeline with no special case.
 
 
 This is the case that makes `multidisc` fiddly, and it is not about folder
@@ -746,6 +759,81 @@ Without this the import fails on permissions.
 formats, embedded art, junk files, tags from whatever ripped them years ago.
 With `strong_rec_thresh: 0.04` expect a substantial quarantine pile on the
 first bulk import. That's the config working, not failing.
+
+### 6.5a Working through quarantine — `libraryd/quarantine.py`
+
+Quarantine is where every failure lands: a bad match, a half-tagged download, a
+disc of a set that can never match alone (§6.3a). Nothing decides what happens
+next but you, so the whole design goal is to make a pile of thirty directories
+triageable in one screen and repairable in one command.
+
+```
+quarantine.py list                 # what is there, and a guess at why
+quarantine.py show ENTRY           # tags, rip log, disc ID, MusicBrainz lookup
+quarantine.py groups               # entries that look like one multi-disc set
+quarantine.py merge A B [C ...]    # combine those discs, hand back to the inbox
+quarantine.py retry ENTRY...       # hand back to the inbox unchanged
+quarantine.py drop ENTRY...        # delete
+```
+
+**`merge` is the multi-disc repair.** It restacks the chosen entries as
+`<Album>/CD1`, `<Album>/CD2`, … — the layout beets collapses into a single
+import task (see the table in §6.3) — and moves that into `/srv/inbox/`. From
+there it is an ordinary import: beets sees the complete tracklist, the
+`missing_tracks` penalty that quarantined each disc individually never fires,
+and the `multidisc` path template files it back out as `Album (Disc 01)` /
+`Album (Disc 02)`.
+
+Three properties it has deliberately:
+
+- **It rewrites no tags.** beets re-reads the whole set against MusicBrainz on
+  import and writes disc numbers itself; a merge that guessed them would be a
+  second, worse source of truth for the same field.
+- **The work directory lives inside `/srv/quarantine/`**, so every move is a
+  rename within one filesystem, the hand-off into the inbox is the single
+  atomic rename `inbox.path` requires, and an interrupted merge leaves the
+  discs recoverable under `.merge-*` rather than half-copied into the inbox. A
+  failure part-way puts every disc back where it was.
+- **It never clobbers.** Same collision rule as `inbox-import.sh` — an existing
+  destination gets a timestamp suffix rather than being overwritten.
+
+**`groups` is the part that saves the reading.** It proposes sets from three
+signals and labels which one it used, because they are not equally trustworthy:
+
+| Confidence | Signal | Needs |
+|---|---|---|
+| `certain` | Two rip logs whose disc IDs resolve to the same MusicBrainz release | `--online` |
+| `strong` | Same album artist and album, distinct disc numbers in the tags | tags |
+| `possible` | Same album with non-overlapping track numbers, or names differing only by a disc marker | — |
+
+Only `certain` also knows *how many* discs the set should have, which is the
+one thing worth going online for: it is the difference between "these two go
+together" and "these two go together and disc 3 is still in the box". The
+lookup is one request per disc ID, rate-limited to MusicBrainz's one per
+second, cached in `/srv/logs/rips/.discid-cache.json`, and every command works
+without it.
+
+Two cases it refuses rather than guesses. **Same album, overlapping track
+numbers** is two rips of the same disc, not a set — reported, but with no merge
+command offered. **Same album, no disc *or* track numbers** is undecidable, and
+says so, because the alternative is a confident-sounding wrong answer about
+files it cannot read.
+
+**It is a library as much as a CLI.** `libraryd`'s `/quarantine` endpoints
+(§10) import `entries()`, `groups()`, `merge()`, `retry()` and `drop()` rather
+than shelling out, and `--json` on the read commands is there so the dashboard
+and the CLI cannot drift. `mediafile` is imported lazily: without it every
+command still works and only the tag-derived columns go blank, which matters on
+a machine where beets lives in its own virtualenv.
+
+`quarantine-test.sh` fabricates a quarantine tree with ffmpeg — a real
+two-disc set, an untagged one, a duplicate pair, a loose `.flac`, a rip log —
+and runs the real script against it. **Write `DISCTOTAL` and `TRACKTOTAL` as
+their own Vorbis comments** when fabricating test files: `-metadata disc=1/2`
+reaches the file as `DISCNUMBER=1/2`, and mediafile does not split the slash
+form on Vorbis the way it does on ID3, so the slash form silently loses
+`disctotal` — the field the grouper keys off. beets and abcde both write the
+separate fields.
 
 ### 6.6 Library hygiene
 
@@ -1007,7 +1095,11 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 | GET | `/rips/current` | Live progress of an in-flight rip |
 | GET | `/events` | SSE stream of rip progress |
 | GET | `/quarantine` | Albums beets couldn't match, with candidate matches |
+| GET | `/quarantine/groups` | Entries that look like discs of one multi-disc set |
+| POST | `/quarantine/merge` | Combine listed entries into `Album/CD1`, `CD2`, … and hand back to the inbox |
+| POST | `/quarantine/{id}/retry` | Move back to the inbox unchanged for another import attempt |
 | POST | `/quarantine/{id}/resolve` | Apply a chosen MusicBrainz release ID, re-run beets import |
+| DELETE | `/quarantine/{id}` | Delete the directory |
 | GET | `/fetched` | Releases `farfetchd` retrieved, awaiting review |
 | POST | `/fetched/{id}/approve` | Move to `/srv/inbox/` for the normal beets import |
 | POST | `/fetched/{id}/reject` | Delete the directory |
@@ -1027,6 +1119,22 @@ resolves final status by checking whether that name is still sitting in
 `/srv/quarantine/`.
 
 Ship a minimal web dashboard on the same service — this is the actual UI for quarantine review and lint violations, and it works from any browser, so it doesn't need to live in the Android app.
+
+**On the quarantine endpoints:** they are a thin HTTP layer over
+`libraryd/quarantine.py` (§6.5a), which is a working CLI in its own right and
+does not wait for Phase 6. Import its functions; do not shell out to it, and do
+not reimplement the merge — the atomic-rename and rollback behaviour is the
+part that must not exist twice.
+
+**There are two different merges, and they are not the same operation.**
+`/quarantine/merge` combines discs that *never imported* — it restacks
+directories in `/srv/quarantine/` and hands the set back to the inbox, and the
+result is one correctly-tagged release. `/releases/merge` below combines discs
+that *did* import, as `Album (Disc 01)` and `Album (Disc 02)` already sitting in
+`/srv/music/`, and it does so by rewriting tags. The quarantine one is the
+common case, is cheap, and ships first; the library one is a presentation
+nicety for sets that got through separately. Don't collapse them into one
+endpoint — they take different inputs and have different blast radii.
 
 **On `/releases/merge`:** do this by rewriting tags (set a shared `album` and continuous `disc`/`track` numbering) and letting beets re-file, *not* by maintaining a separate mapping table that the app has to know about. Rewriting means the merge is visible to every client, survives a rebuild, and needs zero app-side logic. It does break the one-folder rule for that release — accept the exception, or keep the discs separate and let it go. Low priority either way.
 
@@ -1196,7 +1304,7 @@ drive; the half that does is small and mostly config.
 
 ### Phase 1 — Serving music
 - `docker compose up` with Navidrome
-- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it.
+- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it — `libraryd/quarantine.py` (§6.5a) is the tool for that evening, and it needs neither `libraryd` nor the optical drive.
 - Create account, configure transcoding, connect ListenBrainz, then turn `ND_ENABLETRANSCODINGCONFIG` back off
 - **Done when:** music plays in a desktop browser and in a stock Subsonic client on your phone over Tailscale
 
@@ -1215,6 +1323,7 @@ drive; the half that does is small and mostly config.
 - `install.sh` — copy the repo into the system paths, reload systemd and udev. From here on it is the only way anything gets deployed.
 - Verify the read-error grep patterns in `autorip.sh` against a **deliberately scratched disc**. `autorip-test.sh` stubs the rip, so a pattern that never matches is indistinguishable from a clean rip until a real bad disc proves otherwise.
 - `lint.py` (§6.6) + nightly timer
+- Rip a real multi-disc set one disc at a time, confirm both discs quarantine, and put them back together with `quarantine.py groups` → `merge` (§6.5a). This is the one path with no automated cover, and it is the path a box set takes every time.
 - **Done when:** insert disc, walk away, get a phone notification, album is in the library — and the linter reports zero violations
 
 ### Phase 4 — Backups
@@ -1332,6 +1441,7 @@ lathe/
   ingest/           autorip.sh, abcde.conf, beets config
   lint/             lint.py
   libraryd/         FastAPI service
+    quarantine.py   quarantine review + multi-disc merge — CLI and library
     dashboard/      web UI for quarantine + violations
   systemd/          units, timers, udev rules
   docs/             this plan
