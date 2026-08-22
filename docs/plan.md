@@ -39,7 +39,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Unmatched albums | **Left in the inbox → swept to quarantine** | Never let a bad match pollute the library |
 | Remote access | **Tailscale** | No open ports, 10-minute setup, works on Android |
 | Backups | **restic → Backblaze B2**, cloud-only at first | Local drive deferred; adding one later is ~20 min of work |
-| Android app | **Expo dev build + RNTP v5 (`@rntp/player`)** | Handles background audio, lockscreen, Bluetooth, Android Auto |
+| Android app | **Kotlin + Jetpack Compose + Media3** | Android-only by design. Background audio, lockscreen, Bluetooth, audio focus, Android Auto and gapless are all first-party and Apache-2.0 — see §9 |
 | Desktop client | **Navidrome's built-in web UI** | Free. Build nothing. |
 | App v1 scope | Streaming only, with local metadata cache | Offline downloads deferred to v2 (see §9) |
 | Custom API | **FastAPI**, Python | Same language as the rip scripts; small surface |
@@ -49,7 +49,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Multi-disc releases | **One folder per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule, and clients still present it as *one album with disc sections* — measured, §6.5a. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
 | Search | **Subsonic `search3`** only | Artist / album / track is all that's wanted. No custom index. |
-| Distribution | **Personal, but kept releasable** | No hardcoded server; spec-compliant, not Navidrome-specific |
+| Distribution | **Personal, but kept releasable** | A real intent, not a hypothetical — it drives the app stack (§9), the licence, and the F-Droid-friendly package ID. No hardcoded server; spec-compliant, not Navidrome-specific |
 | Repos | **Two now** (server, app), a third later (client library) | Different languages, toolchains, and publication futures — see §14 |
 | Naming | **App gets a real name; server components stay boring** | You debug infrastructure at 11pm; you market an app |
 
@@ -980,24 +980,68 @@ Alternatives if B2 disappoints: Hetzner Storage Box (cheap, restic over SFTP), r
 
 | Layer | Choice |
 |---|---|
-| Framework | Expo (**dev build**, not Expo Go — native modules) |
-| Language | TypeScript |
-| Audio | `@rntp/player` (RNTP v5) |
-| Navigation | Expo Router |
-| State | Zustand |
-| Local DB | `expo-sqlite` + Drizzle ORM |
-| Data fetching | TanStack Query |
-| Secrets | `expo-secure-store` |
-| Hashing | `js-md5` (RN has no built-in MD5) |
+| Language | **Kotlin** |
+| UI | **Jetpack Compose**, Material 3 |
+| Audio | **Media3** (`androidx.media3`) — ExoPlayer behind a `MediaLibraryService` |
+| Navigation | Navigation Compose |
+| State | `ViewModel` + `StateFlow` |
+| Local DB | **Room** |
+| Networking | Ktor Client + `kotlinx.serialization` |
+| Images | **Coil** |
+| Secrets | `EncryptedSharedPreferences` (Jetpack Security) |
+| Background work | WorkManager (v2 downloads) |
+| Hashing | `java.security.MessageDigest` — MD5 is in the JDK |
+| Build | Gradle → APK |
 
-**Licensing note:** RNTP v5 is commercially licensed but free for personal use. That's this project. If it ever becomes commercial, either pay or fall back to v4 (Apache-2.0, on the `v4` branch, different package name and incompatible API).
+Every line of that is first-party AndroidX or permissively licensed. No
+proprietary dependency, no JavaScript runtime, no bridge, and no dev-build
+pipeline: `./gradlew assembleRelease` produces the artefact.
 
-> **Verify this before scaffolding, not after.** RNTP is the one dependency with no realistic substitute — background playback, lockscreen and notification controls, Bluetooth buttons, audio focus, and Android Auto are all native Android plumbing that nothing else in the RN ecosystem wraps as completely. Two things must be confirmed current at the moment work starts:
->
-> 1. **The licence still permits personal use on the terms above.** The fallback is v4, which is a different package with an incompatible API — a rewrite of the playback layer, not a version bump.
-> 2. **v5's Expo config plugin supports the Expo SDK version you're about to scaffold.** If it lags, the choice is pinning to an older SDK or patching the plugin yourself, and it is much cheaper to know that before there are screens on top of it.
->
-> Ten minutes of reading. Do it as the first action of Phase −1(c) and record the answer here.
+### Why native, and not Expo / React Native
+
+This was planned as Expo + TypeScript + RNTP v5 and reversed before any code
+existed. The reasoning is kept because the same arguments would decide any
+future reopening.
+
+**The requirement list is almost entirely native Android media plumbing.**
+Background playback, notification and lockscreen controls, Bluetooth transport
+buttons, audio focus, Android Auto, gapless. Every cross-platform option is a
+wrapper over `androidx.media3`, so going native removes a layer rather than
+adding a framework. Meanwhile the part a framework makes easy — the UI — is
+seven screens with no queue, no playlists, no sync and no autoplay, because the
+philosophy below deleted them. The usual React Native calculus inverts here: the
+half that frameworks are good at is the half this app barely has.
+
+**RNTP v5's licence collides with releasing.** It is commercially licensed and
+free for *personal use*, which was fine while this was private and stops being
+fine the moment it ships. Two independent problems, either one sufficient:
+publishing to Play or F-Droid is not personal use and would need a commercial
+licence; and a proprietary personal-use-only dependency cannot be redistributed
+inside a GPL-3.0 work (§11h), which F-Droid's inclusion policy would reject in
+any case. Since §14 picks `io.github.<username>.deadwax` *because* F-Droid
+prefers it, the old stack was aimed at a store it could not enter. Media3 is
+Apache-2.0 and the entire question disappears. (Those licence terms are as
+recorded when this plan was written — re-check them before acting on this
+paragraph if the decision is ever reopened.)
+
+**Distribution gets easier.** F-Droid packaging of a plain Gradle app is
+routine; of an Expo prebuild it is not.
+
+**Maintenance is cheaper across the years this will exist.** A solo-maintained
+released app on Expo pays an SDK-upgrade tax annually, with native-module compat
+lag each time — which is precisely what the old plan's own verification callout
+was worried about. A Gradle/Media3 app can sit untouched for two years and still
+build.
+
+**What it costs: iOS, permanently.** Already a stated non-goal (§1), and the
+differentiator is the philosophy rather than platform reach — but it is a real
+door closing, and the only thing that would justify revisiting this.
+
+> **If iOS ever becomes a goal, don't port — reconsider from scratch.** The
+> honest hedge at that point is Flutter (`just_audio` + `audio_service`:
+> permissively licensed, covers Android Auto, good gapless), not React Native.
+> Making that call under pressure with screens already built is how you end up
+> paying for two platforms and liking neither.
 
 ### Auth model
 
@@ -1010,7 +1054,7 @@ token = md5(password + salt)
 
 Sent as `?u=<user>&t=<token>&s=<salt>&v=1.16.1&c=<appname>&f=json`
 
-Store the **password** (not the token) in SecureStore. The key property: because auth lives in the query string, `stream` URLs are self-contained — you hand the raw URL to RNTP and it plays. No custom headers, no proxy shim, no auth interceptor in the audio layer.
+Store the **password** (not the token) in `EncryptedSharedPreferences`. The key property: because auth lives in the query string, `stream` URLs are self-contained — you hand the raw URL to ExoPlayer as a `MediaItem` and it plays. No custom headers, no `DataSource.Factory` shim, no auth interceptor in the audio layer.
 
 ### Design philosophy — the constraint that defines the app
 
@@ -1109,12 +1153,12 @@ Deferred, but designed for:
 
 - `downloads` table: `trackId`, `releaseId`, `state` (queued/downloading/complete/failed), `localPath`, `bytesTotal`, `bytesDone`
 - **Releases are the only download unit.** Consistent with everything else — you don't download half a record.
-- `expo-file-system` for transfers with resume support
+- WorkManager + Ktor for transfers — resumable, and correct across process death
 - User-set disk quota with LRU eviction
 - Now Playing resolves `localPath` first, falls back to `stream` URL
 - Visual state on album tiles: not downloaded / partial / complete / stale
 
-RNTP v5's built-in audio caching is a partial substitute in the meantime — it'll cover the "song I played an hour ago" case but not "prepare for a flight."
+Media3's `SimpleCache` behind a `CacheDataSource` is a partial substitute in the meantime — it'll cover the "song I played an hour ago" case but not "prepare for a flight."
 
 ---
 
@@ -1290,10 +1334,9 @@ Run the stock clients — Symfonium, Tempo, Substreamer — against local Navidr
 
 The largest single chunk in the plan, and it needs no Pi:
 
-- **First: confirm the RNTP v5 licence terms and Expo SDK support (§9).** Ten minutes, and it gates everything below it.
-- Expo dev build scaffold, RNTP wired up, audio playing at all
-- The Subsonic client module: salted-token auth, `js-md5`, capability detection via `getOpenSubsonicExtensions`
-- SQLite schema + Drizzle, sync logic
+- Gradle scaffold, a `MediaLibraryService` wired up, audio playing at all
+- The Subsonic client module: salted-token auth, `MessageDigest` MD5, capability detection via `getOpenSubsonicExtensions`
+- Room schema, sync logic
 - Shelf and Release screens against local Navidrome
 
 Populate the test library with a few hundred albums if you can, so pagination and scroll performance assumptions are realistic rather than flattering.
@@ -1314,7 +1357,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 
 - Install Tailscale on phone and laptop, get comfortable with it
 - Download the Pi OS Lite 64-bit image
-- Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
+- Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**, and after the §9 stack change every dependency is first-party AndroidX or Apache-2.0, so nothing obstructs it; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
 - Settle the §13 open questions — offline downloads is **decided: v2**, per `PHILOSOPHY.md`
 
 **Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the collection into `/srv/inbox/` and let beets file it.
@@ -1368,9 +1411,9 @@ drive; the half that does is small and mostly config.
 - **Done when:** a restore test has actually succeeded — and the first full upload didn't ruin anyone's week
 
 ### Phase 5 — Android app
-- Expo dev build scaffold, RNTP wired up
+- Gradle scaffold, Media3 `MediaLibraryService` wired up
 - Subsonic API client in its own module, salted-token auth, capability detection
-- SQLite metadata cache + sync
+- Room metadata cache + sync
 - Screens 1–7
 - **Done when:** it's the app you reach for instead of the stock client — and nothing in it can queue anything but a release
 
@@ -1381,7 +1424,7 @@ drive; the half that does is small and mostly config.
 
 ### Phase 7 — v2 features
 - Offline downloads
-- Android Auto (RNTP v5 supports it natively)
+- Android Auto — with `MediaLibraryService` already in place the browse tree is most of the remaining work, so this may well land before the rest of v2
 - Whatever you actually miss by then
 
 ---
@@ -1389,7 +1432,7 @@ drive; the half that does is small and mostly config.
 ## 12. Gotchas
 
 - **udev `RUN+=` kills long processes.** Dispatch to systemd. Non-negotiable.
-- **Expo Go can't load native modules.** You need a dev build from day one of app work.
+- **A media foreground service needs `foregroundServiceType="mediaPlayback"`** in the manifest *and* the runtime notification permission on Android 13+. Miss either and playback dies the moment the app leaves the foreground — which presents as an audio bug and isn't one.
 - **Mount the library drive by UUID**, never `/dev/sda1`. Device order changes when you plug in the optical drive.
 - **First Navidrome scan of a large library is slow** on a Pi. Let it finish before judging performance.
 - **Some Subsonic clients coerce IDs to integers.** Navidrome IDs are strings. If you write your own client, don't make that mistake.
@@ -1407,14 +1450,14 @@ drive; the half that does is small and mostly config.
 - **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
 - **`find -newermt "-120 seconds"` is a GNU extension.** Other `find` implementations reject it, and if the error is suppressed the result reads as "nothing changed recently" — so a settle-check built on it silently concludes the copy has finished and imports mid-write. Use a reference file with POSIX `-newer`, and don't suppress the error.
-- **Confirm RNTP v5's licence and Expo SDK support before scaffolding the app.** The fallback is an incompatible API, so discovering a problem late means rewriting the playback layer.
+- **Don't take a dependency that is free "for personal use".** It quietly caps the whole project at personal use, and you find out at the point of release when it is most expensive. That is what removed the original React Native stack (§9); apply the same check to anything new.
 
 ---
 
 ## 13. Still open
 
 - ~~**Offline downloads: v1 or v2?**~~ **Settled: v2**, per `PHILOSOPHY.md`. The local metadata cache still ships in v1, which is the foundation downloads need — so this stays cheap to add later.
-- **Gapless playback.** RNTP v5 has preloading, which gets close. True gapless for continuous albums may need real work — and matters more here than in most players.
+- ~~**Gapless playback.**~~ **Largely settled by the stack change (§9):** ExoPlayer does gapless natively across a playlist of `MediaItem`s, which is the exact shape an album already has. The residual risk is the transcode rather than the player — on WiFi you request original FLAC and it's clean, while per-track Opus transcodes on cellular can reintroduce a seam. Test both with a continuous live record.
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
@@ -1503,7 +1546,7 @@ Interface spec: `docs/fetch-contract.md`.
 
 **`opensubsonic-client`** — extracted from the app **later**, once it stops changing daily. Give it a generic name rather than a Deadwax-branded one so it's useful to others.
 
-> **Don't extract the client library early.** Live with `src/subsonic/` inside the app repo, enforce the no-UI-imports rule from day one, and pull it out when it's stable. Premature extraction means npm-linking and a version bump for every fix, during exactly the phase when you're changing it constantly.
+> **Don't extract the client library early.** Live with a `subsonic` Gradle module inside the app repo, enforce the no-UI-imports rule from day one, and pull it out when it's stable. Premature extraction means a composite build or a Maven publish and a version bump for every fix, during exactly the phase when you're changing it constantly.
 
 The real justification for splitting server from app isn't technical — it's that they have **different publication futures**. The app is the thing you might open-source; the server repo has your paths and your setup in it. Separate repos means "should I publish this?" is answered per-repo rather than per-directory.
 
@@ -1523,7 +1566,7 @@ Three things it locks in:
 - **Subsonic `c=` parameter** — `Deadwax`. This is the client identifier on every API call, so it appears in Navidrome's logs and in the logs of any other server if you release it.
 - **Repo, F-Droid, and Play listing names.**
 
-**Collision check — partial.** Clear on GitHub, npm, F-Droid, and Google Play. **Not clear conceptually:** at least two vinyl-collection apps named Deadwax exist on iOS (Discogs collection managers / pressing identification), and `deadwax.app`, `deadwax.io` and `deadwaxhq.com` are all taken. Also adjacent: **DeaDBeeF**, an open-source audio player since 2009.
+**Collision check — partial.** Clear on GitHub, F-Droid, and Google Play. (npm was the namespace to check under the old stack; if `opensubsonic-client` is ever extracted and published it's Maven Central that matters, and that hasn't been checked.) **Not clear conceptually:** at least two vinyl-collection apps named Deadwax exist on iOS (Discogs collection managers / pressing identification), and `deadwax.app`, `deadwax.io` and `deadwaxhq.com` are all taken. Also adjacent: **DeaDBeeF**, an open-source audio player since 2009.
 
 Irrelevant for a personal Android project. If this is ever published, expect to be the third or fourth Deadwax in the music space and to spend effort distinguishing yourself. Runners-up that avoid the collector-app space entirely: **Gatefold**, **Spindle**, **Lacquer**.
 
