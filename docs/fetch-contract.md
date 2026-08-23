@@ -202,6 +202,24 @@ usually specify a duration; set the client's seed-time limit and let it
 auto-remove-and-delete when satisfied. That turns 2× forever into 2× for a
 fortnight, self-cleaning.
 
+The second copy exists for a bounded window, and nothing after the copy-out
+adds a third:
+
+| Stage | Copies |
+|---|---|
+| Downloading into `/srv/torrents/` | 1 |
+| Complete — `farfetchd` copies into `/srv/staging/fetched/` | **2** |
+| Approved — moved to `/srv/inbox/` | 2 — rename on one filesystem |
+| Imported — beets moves into `/srv/music/` | 2 — rename again |
+| Seed time satisfied — client deletes its copy | 1 |
+
+Only the copy-out costs disk. Everything downstream of it is a rename, which
+is the same property the inbox hand-off relies on everywhere else.
+
+HTTP sources have no second copy at all: nothing needs to retain the original,
+so the finished directory is *moved* into `-o` rather than copied. The 2× is
+specific to torrents, and specific to the period you are seeding.
+
 `farfetchd` drives an existing client (transmission-daemon over RPC) rather
 than implementing BitTorrent — resume, DHT, piece verification and ratio rules
 come free, and status reporting is a query rather than bookkeeping. VPN
@@ -214,15 +232,55 @@ to absorb it.
 
 `farfetchd` is a CLI and runs wherever you are. It needs no access to
 `/srv/music`, `/srv/config`, or anything but its own work directory and the
-`-o` you give it.
+`-o` you give it. `lathe`'s compose file doesn't reference it, and `lathe`
+stays deployable without it.
 
-Run it on the Pi and two things join the stack: a torrent client, and
-`/srv/torrents/` for it to own. Run it on a laptop and neither does — you
-point `-o` at a local folder and get the files across with `push-music.sh`
-like any other manual drop.
+### Where it runs
 
-Either way `lathe`'s compose file doesn't reference it, and `lathe` stays
-deployable on its own.
+**On the Pi, if you torrent at all.** Not for convenience — seeding needs an
+always-on host, and a laptop closes its lid. Two things join the stack there:
+a torrent client, and `/srv/torrents/` for it to own. Bandcamp-only use is
+happy anywhere; point `-o` at a local folder and move the result across with
+`push-music.sh` like any other manual drop.
+
+### How it gets invoked
+
+**Now: SSH over Tailscale.** Costs nothing to set up and works on day one.
+
+**Later: `libraryd` shells out to it.** A fetch box on the dashboard runs
+`farfetchd <url> -o /srv/staging/fetched` as a subprocess. That is `lathe`
+depending on `farfetchd`, one direction, and `farfetchd` does not change at
+all — no HTTP surface, no config pointing back here. **The CLI is the API**,
+which is what makes the upgrade from *SSH in* to *button on a dashboard* a
+few lines in `libraryd` rather than a redesign. Start with SSH without
+worrying you are painting yourself in.
+
+### Torrents are invoked twice, and never block
+
+A CLI that blocked for six hours on a torrent would die with the SSH session
+that started it. It doesn't:
+
+1. `farfetchd <magnet> -o …` adds the torrent to the client, records the
+   pending job, prints an id, and **exits**.
+2. The client's completion hook (`script-torrent-done` in transmission)
+   invokes `farfetchd complete <id>`, which copies the payload into `-o`,
+   writes `fetched.json`, and exits. The torrent keeps seeding.
+
+Nothing polls, nothing stays resident, and `farfetchd` remains a program that
+starts and ends. It is simply invoked by two different callers — you, and
+then the torrent client.
+
+A periodic `farfetchd reap` from a systemd timer is the duller alternative if
+the hook proves awkward. It works, it just polls for something the client
+already knows.
+
+### Network
+
+Running a torrent client on the Pi raises the VPN question, and the answer
+wants to be *narrow*: bind the client's network namespace to the VPN and
+leave Navidrome, Tailscale, beets and restic on the normal interface. See
+§13 of `plan.md` — it is a `lathe` deployment decision, not a `farfetchd`
+one, and `farfetchd` should stay out of the business of network namespaces.
 
 ---
 
