@@ -45,6 +45,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Custom API | **FastAPI**, Python | Same language as the rip scripts; small surface |
 | Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively. Deadwax implements nothing — see §9. |
 | **App philosophy** | **Album/EP only.** No playlists, no autoplay, no track shuffle | The queue *is* the album. Collapses the fiddliest part of any player. |
+| Shelf density | **2–4 across, user-selectable; name band at 2 only** | Band when there's room, tap when there isn't — keeps "the artwork speaks first" intact rather than overruled. See §9 |
 | Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
 | Multi-disc releases | **One folder per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule, and clients still present it as *one album with disc sections* — measured, §6.5a. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
@@ -1109,10 +1110,30 @@ The gap you're filling is specifically **album-first × Android × OpenSubsonic*
 
 **Search behaviour:** `search3` returns artists, albums, and songs. Artists and albums navigate directly. A song result navigates to **its release, scrolled to that track** — never to an isolated song. This is the one place the philosophy needs deliberate enforcement in the UI.
 
+### Visual direction — settled
+
+Dark, hard-edged, artwork edge to edge with no gaps and almost no chrome; the
+grid *is* the app. Type is Space Grotesk. There is no chromatic accent, so
+active states are white against the near-black. Four directions were drawn and
+this one chosen over a poster-brutalist take, a mono/archival one, and a
+one-record-at-a-time crate layout.
+
+Artboards, including the three not chosen: https://claude.ai/code/artifact/71e5b3b6-5e83-42b6-9d48-6bb775a082fb
+
+Below each sleeve sits a **36px black band** carrying title and artist in white,
+with a 1px hairline above it. The band is not decoration. It is the only
+treatment whose contrast is *deterministic* over artwork nobody can audit — a
+gradient scrim, a text shadow, a backdrop blur, or sampling the cover with
+Palette to pick light-or-dark text are all "usually fine", and across 5,000
+covers "usually fine" means broken somewhere you will find by scrolling past it.
+It also costs nothing per item in a scrolling grid, where luminance sampling
+means a bitmap read per tile. The hairline does a second job: it separates tiles
+in a grid that has no gaps.
+
 ### Screens (v1)
 
 1. **Setup** — server URL, username, password, connection test
-2. **Shelf** — artwork grid, the primary surface. Sort/filter control (newest, random, year, genre, artist, starred, EP vs album).
+2. **Shelf** — artwork grid, the primary surface. Sort/filter control (newest, random, year, genre, artist, starred, EP vs album), and a density control beside it — see below.
 3. **Artist** — that artist's releases, as artwork
 4. **Release** — large cover, tracklist, single Play button. **Group the tracklist by `discNumber` when there is more than one**, using `discTitles` from `getAlbum` for the headings — a merged box set arrives as one album with four discs' worth of tracks (§6.5a), and rendering that as an undivided list of 60 is the one place the album-as-queue philosophy needs a visual seam. The queue stays the whole release; only the *display* is sectioned.
 5. **Search** — one field, results grouped by artist / release / track
@@ -1146,6 +1167,78 @@ This also happens to be exactly the foundation offline downloads need.
 - **WiFi:** request original (FLAC). Pi handles it trivially — it's just file serving.
 - **Cellular:** request `format=opus&maxBitRate=128`. Navidrome transcodes on the fly via ffmpeg. A Pi 5 handles a couple of concurrent transcodes fine.
 - Make this a user-visible setting; don't hide the choice.
+
+### Shelf density, and why not a pinch
+
+The Shelf shows **2, 3, or 4 releases across**, user-selectable, defaulting to 2.
+
+- **The band appears at 2 across and disappears at 3 and 4.** At 130dp a band
+  truncates to "Music Has the R…", which is worse than no text — so past that
+  point the covers identify themselves and metadata reverts to tap-only. This is
+  what keeps `PHILOSOPHY.md`'s "the artwork speaks first" intact rather than
+  overruled: **band when there is room, tap when there isn't.**
+- **A hairline gutter replaces the band at 3 and 4.** The grid has no gaps, so
+  with neither one, adjacent covers bleed into each other.
+- **Capped at 4.** At 6 across the tiles are 65dp, sleeves stop being
+  distinguishable, and browsing by cover — the one thing the app is for — stops
+  working.
+- **Starts at 2, not 1.** One across is the crate layout that was drawn and not
+  chosen, and it is close to unusable for finding anything among 5,000 releases.
+  Adding it back is a one-line change if it turns out to be missed.
+
+**The control is a cycling glyph in the Shelf's top bar, next to the sort
+control — not a slider, and not a pinch.**
+
+A slider implies a continuum over what is three discrete values, and a Material
+slider is the component vocabulary the philosophy exists to reject. Pinch is
+worse than it first appears: the gesture is continuous and the outcome is
+quantised, so unless the grid reflows continuously under your fingers and snaps
+on release, it reads as a jarring jump bearing no relation to how far you
+pinched. Doing it properly needs a custom layout that interpolates between
+column counts, because `LazyVerticalGrid` does not reflow mid-gesture — real
+work, and not v1 work.
+
+A gesture also needs a visible control or nobody finds it. So the glyph is not
+the fallback; it is the thing that has to exist. Pinch can be layered on later,
+once there is something to layer it onto.
+
+### Cover art sizes — request from a fixed ladder
+
+`getCoverArt` takes an optional `size`, and that value lands in the URL, which
+is what every image cache keys on. `size=585` and `size=390` are two entries for
+the same cover, sharing nothing.
+
+Derive `size` from the tile width and the numbers fall out of the layout: on a
+390dp screen at 3x, 2 across needs 585px, 3 across 390px, 4 across 292px. Change
+density and every cover re-fetches from the Pi over Tailscale, while the old
+entries sit in the cache until LRU evicts them — three copies of the library at
+slightly different sizes, and an effective cache a third of its configured size.
+A different screen width produces a fourth and fifth set of numbers.
+
+So round **up** to a fixed ladder, and never request anything else:
+
+| Bucket | Used for |
+|---|---|
+| 160 | Now Playing strip, search result rows |
+| 320 | dense grid — 3 and 4 across |
+| 640 | roomy grid — 2 across, Release screen header |
+| 1280 | Now Playing full-bleed artwork |
+
+2 across (585) and 3 across (390) both round to 640, so they share one cache
+entry and switching between them is instant and needs no network. Only 4 across
+drops a bucket, and it is the cheapest one. Downscaling 640 into a 292px slot is
+free on device and looks better than upscaling — let Coil do the final resize.
+
+- **Never derive the bucket from screen width.** A fixed ladder keeps the cache
+  predictable and portable across devices.
+- **Navidrome caches its own resized copies.** Repeated bucket values are cheap
+  server-side too; arbitrary per-device numbers make it generate and store a new
+  variant for every distinct value, churning the Pi's cache as well as yours.
+- **`size` is honoured unevenly** — some servers ignore it and return the
+  original. Never assume the bytes match the request; resize on device anyway.
+  Same reasoning as the rest of "Keeping it releasable".
+- **Pass the object's `coverArt` field, not the album id**, and treat it as
+  opaque.
 
 ### v2: offline downloads
 
