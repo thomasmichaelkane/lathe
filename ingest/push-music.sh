@@ -20,7 +20,7 @@
 #   So we rsync into /srv/staging/incoming (unwatched), then move into
 #   /srv/inbox. Both are on the same filesystem, so the move is atomic and
 #   directories appear complete or not at all. Same principle as farfetchd
-#   writing fetch.json last.
+#   writing fetched.json last.
 
 set -euo pipefail
 
