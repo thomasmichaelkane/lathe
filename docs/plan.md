@@ -169,6 +169,73 @@ services:
 
 Deliberately **no reverse proxy in v1** — Tailscale handles access and there's no TLS to terminate on a tailnet. Add Caddy later only if you decide to expose it publicly.
 
+### Torrenting, if `farfetchd` runs here
+
+**Not settled** — §13 covers whether to do this at all. This is the shape for
+when it is, because the decision is much easier to make against something
+concrete.
+
+The VPN applies to the torrent client *only*, and not by routing rules.
+`network_mode: "service:gluetun"` makes the client share the VPN container's
+network namespace instead of having one of its own, so it has no interface
+except the tunnel. There is no leak path to configure because there is no
+other path — and if the tunnel drops, the client isn't asked to stop, it
+simply has nowhere to send packets.
+
+```yaml
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun]
+    ports:
+      - "127.0.0.1:9091:9091"      # transmission's RPC, published HERE
+    environment:
+      VPN_SERVICE_PROVIDER: <provider>
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: <key>
+      FIREWALL_OUTBOUND_SUBNETS: 192.168.1.0/24   # reach the LAN at all
+
+  transmission:
+    image: lscr.io/linuxserver/transmission
+    container_name: transmission
+    restart: unless-stopped
+    user: "1001:1001"
+    network_mode: "service:gluetun"   # <- the whole trick
+    depends_on: [gluetun]
+    volumes:
+      - /srv/torrents:/downloads
+```
+
+Navidrome, `libraryd`, beets and restic keep the normal interface and never
+notice. **Tailscale runs on the host, not in this compose file**, so it never
+sees the VPN and cannot lose a fight over the default route — which is exactly
+the failure mode that rules out a whole-Pi VPN (§13).
+
+Three things that catch everyone:
+
+- **Ports are published on `gluetun`, never on `transmission`.** A container
+  with `network_mode: "service:…"` has no network stack of its own to publish
+  from, so a `ports:` block on it is an error rather than a no-op. This is the
+  most common mistake with this pattern by a distance.
+- **Recreating `gluetun` orphans `transmission`.** A new VPN container means a
+  new namespace, and the dependent container has to restart to rejoin it.
+  `depends_on` covers startup order, not this.
+- **`farfetchd` talks to `127.0.0.1:9091` on the host**, reaching transmission
+  through gluetun's published port. The CLI stays ignorant of the VPN
+  entirely — the isolation lives a layer beneath it, which is why none of this
+  appears in `fetch-contract.md`.
+
+`/srv/torrents/` (§4) is this client's own directory. Its contents are seed
+copies: beets never sees them, and nothing else may write there — see the
+copy-not-move rule in `docs/fetch-contract.md`.
+
+Alternatives exist — a systemd unit with `NetworkNamespacePath=`, or the
+cgroup/uid split tunnelling some VPN clients offer — and both work. Both also
+depend on a rule being correct rather than on there being no other route, so
+they fail open where this fails closed.
+
 ### Navidrome settings to set after first boot
 
 - Create your user account (first user created becomes admin).
@@ -1463,7 +1530,7 @@ drive; the half that does is small and mostly config.
 - ~~**Gapless playback.**~~ **Largely settled by the stack change (§9):** ExoPlayer does gapless natively across a playlist of `MediaItem`s, which is the exact shape an album already has. The residual risk is the transcode rather than the player — on WiFi you request original FLAC and it's clean, while per-track Opus transcodes on cellular can reintroduce a seam. Test both with a continuous live record.
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
-- **VPN for the torrent client.** Only relevant if `farfetchd` runs on the Pi at all (see `docs/fetch-contract.md`). Torrenting through a VPN is the norm on public trackers, where the swarm publishes its peer list and participation *is* disclosure — monitoring firms enumerate it and notices reach the ISP that owns the IP. Private trackers are closed swarms and the risk is much lower, though some restrict VPN exit IPs; check the rules. The real question is not whether but **how narrowly**. Routing the *whole Pi* through a commercial VPN fights Tailscale for the default route and DNS — so a tripped killswitch costs you access to your own library — sends WiFi streaming out of the house and back, and puts beets' MusicBrainz queries and restic's B2 pushes behind a shared exit IP that gets rate-limited. Scope it to the torrent client's network namespace instead (a `gluetun` sidecar, `network_mode: "service:gluetun"`) and nothing else on the Pi notices. Separately, confirm the provider offers **port forwarding**: without it you are an unconnectable peer, which downloads fine but seeds poorly — and on a private tracker that wrecks the ratio the VPN was meant to protect.
+- **VPN for the torrent client.** Only relevant if `farfetchd` runs on the Pi at all (see `docs/fetch-contract.md`). Torrenting through a VPN is the norm on public trackers, where the swarm publishes its peer list and participation *is* disclosure — monitoring firms enumerate it and notices reach the ISP that owns the IP. Private trackers are closed swarms and the risk is much lower, though some restrict VPN exit IPs; check the rules. The real question is not whether but **how narrowly**. Routing the *whole Pi* through a commercial VPN fights Tailscale for the default route and DNS — so a tripped killswitch costs you access to your own library — sends WiFi streaming out of the house and back, and puts beets' MusicBrainz queries and restic's B2 pushes behind a shared exit IP that gets rate-limited. Scope it to the torrent client's network namespace instead and nothing else on the Pi notices — **§5 has the worked compose shape, the mechanism, and the gotchas**. Separately, confirm the provider offers **port forwarding**: without it you are an unconnectable peer, which downloads fine but seeds poorly — and on a private tracker that wrecks the ratio the VPN was meant to protect.
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
 - **Whether to release the app at all.** Deferred by design — Phase 5 keeps the option open at no cost. Decide once it's something you actually use daily.
 
