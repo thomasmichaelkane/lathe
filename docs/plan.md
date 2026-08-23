@@ -109,9 +109,6 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
     incoming/       # rsync landing area for uploads. UNWATCHED — see §6.5
   quarantine/       # beets could not confidently match these
   inbox/            # manual drops: Bandcamp, purchases, existing collection
-  torrents/         # a torrent client's own downloads, if you run one here.
-                    # The seed copy: never moved, never retagged, never
-                    # imported. See docs/fetch-contract.md
   config/
     navidrome/      # SQLite DB, cache
     beets/          # config.yaml, library.db
@@ -168,73 +165,6 @@ services:
 ```
 
 Deliberately **no reverse proxy in v1** — Tailscale handles access and there's no TLS to terminate on a tailnet. Add Caddy later only if you decide to expose it publicly.
-
-### Torrenting, if `farfetchd` runs here
-
-**Not settled** — §13 covers whether to do this at all. This is the shape for
-when it is, because the decision is much easier to make against something
-concrete.
-
-The VPN applies to the torrent client *only*, and not by routing rules.
-`network_mode: "service:gluetun"` makes the client share the VPN container's
-network namespace instead of having one of its own, so it has no interface
-except the tunnel. There is no leak path to configure because there is no
-other path — and if the tunnel drops, the client isn't asked to stop, it
-simply has nowhere to send packets.
-
-```yaml
-  gluetun:
-    image: qmcgaw/gluetun
-    container_name: gluetun
-    restart: unless-stopped
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun]
-    ports:
-      - "127.0.0.1:9091:9091"      # transmission's RPC, published HERE
-    environment:
-      VPN_SERVICE_PROVIDER: <provider>
-      VPN_TYPE: wireguard
-      WIREGUARD_PRIVATE_KEY: <key>
-      FIREWALL_OUTBOUND_SUBNETS: 192.168.1.0/24   # reach the LAN at all
-
-  transmission:
-    image: lscr.io/linuxserver/transmission
-    container_name: transmission
-    restart: unless-stopped
-    user: "1001:1001"
-    network_mode: "service:gluetun"   # <- the whole trick
-    depends_on: [gluetun]
-    volumes:
-      - /srv/torrents:/downloads
-```
-
-Navidrome, `libraryd`, beets and restic keep the normal interface and never
-notice. **Tailscale runs on the host, not in this compose file**, so it never
-sees the VPN and cannot lose a fight over the default route — which is exactly
-the failure mode that rules out a whole-Pi VPN (§13).
-
-Three things that catch everyone:
-
-- **Ports are published on `gluetun`, never on `transmission`.** A container
-  with `network_mode: "service:…"` has no network stack of its own to publish
-  from, so a `ports:` block on it is an error rather than a no-op. This is the
-  most common mistake with this pattern by a distance.
-- **Recreating `gluetun` orphans `transmission`.** A new VPN container means a
-  new namespace, and the dependent container has to restart to rejoin it.
-  `depends_on` covers startup order, not this.
-- **`farfetchd` talks to `127.0.0.1:9091` on the host**, reaching transmission
-  through gluetun's published port. The CLI stays ignorant of the VPN
-  entirely — the isolation lives a layer beneath it, which is why none of this
-  appears in `fetch-contract.md`.
-
-`/srv/torrents/` (§4) is this client's own directory. Its contents are seed
-copies: beets never sees them, and nothing else may write there — see the
-copy-not-move rule in `docs/fetch-contract.md`.
-
-Alternatives exist — a systemd unit with `NetworkNamespacePath=`, or the
-cgroup/uid split tunnelling some VPN clients offer — and both work. Both also
-depend on a rule being correct rather than on there being no other route, so
-they fail open where this fails closed.
 
 ### Navidrome settings to set after first boot
 
@@ -350,7 +280,7 @@ finishes:
 **The move must be a rename, not a copy.** `/srv/staging` and `/srv/inbox` are
 on the same filesystem, so `mv` is a single atomic `rename(2)` and the path
 unit watching `/srv/inbox/` can never observe a half-written album. This is the
-same completeness trick `push-music.sh` uses for uploads and `fetched.json` uses
+same completeness trick `push-music.sh` uses for uploads and `fetch.json` uses
 for fetches — it is why none of the three entry points needs a lock.
 
 The destination name is for humans only. It is what you read in the inbox, or
@@ -813,7 +743,7 @@ network transfer.
 
 `/srv/staging/incoming/` is not watched, and both directories are on the same
 filesystem, so the `mv` is atomic and albums appear in the inbox complete or
-not at all. Same principle as `farfetchd` writing `fetched.json` last.
+not at all. Same principle as `farfetchd` writing `fetch.json` last.
 
 `inbox-import.sh` **also** waits for the inbox to go quiet for two minutes
 before importing, as a safety net for the times something gets copied in
@@ -1530,7 +1460,7 @@ drive; the half that does is small and mostly config.
 - ~~**Gapless playback.**~~ **Largely settled by the stack change (§9):** ExoPlayer does gapless natively across a playlist of `MediaItem`s, which is the exact shape an album already has. The residual risk is the transcode rather than the player — on WiFi you request original FLAC and it's clean, while per-track Opus transcodes on cellular can reintroduce a seam. Test both with a continuous live record.
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
-- **VPN for the torrent client.** Only relevant if `farfetchd` runs on the Pi at all (see `docs/fetch-contract.md`). Torrenting through a VPN is the norm on public trackers, where the swarm publishes its peer list and participation *is* disclosure — monitoring firms enumerate it and notices reach the ISP that owns the IP. Private trackers are closed swarms and the risk is much lower, though some restrict VPN exit IPs; check the rules. The real question is not whether but **how narrowly**. Routing the *whole Pi* through a commercial VPN fights Tailscale for the default route and DNS — so a tripped killswitch costs you access to your own library — sends WiFi streaming out of the house and back, and puts beets' MusicBrainz queries and restic's B2 pushes behind a shared exit IP that gets rate-limited. Scope it to the torrent client's network namespace instead and nothing else on the Pi notices — **§5 has the worked compose shape, the mechanism, and the gotchas**. Separately, confirm the provider offers **port forwarding**: without it you are an unconnectable peer, which downloads fine but seeds poorly — and on a private tracker that wrecks the ratio the VPN was meant to protect.
+- **A VPN on this box, if you ever run one.** Only relevant if you add a torrent client here. Keep any VPN scoped to that client's own container — a full-tunnel VPN on the Pi fights Tailscale for the default route, so a tripped killswitch would cost you access to your own library. `farfetchd`'s repo covers the how; the only thing `lathe` cares about is that Tailscale keeps the default route.
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
 - **Whether to release the app at all.** Deferred by design — Phase 5 keeps the option open at no cost. Decide once it's something you actually use daily.
 
@@ -1548,7 +1478,6 @@ Worth being precise about this, because it prevents over-splitting:
 | Ingest pipeline | Path-triggered batch job (`inbox.path` → `inbox-import.sh`). The only thing that runs beets |
 | Linter | Scheduled batch job |
 | `libraryd` API | The only long-running HTTP service in this repo |
-| `farfetchd` | Not part of this system at all — a standalone CLI in a separate repo that drops files in a directory and exits |
 | Dashboard | A frontend served by `libraryd` |
 | Deadwax | An Android client |
 | Subsonic client | A library inside Deadwax |
@@ -1572,11 +1501,11 @@ Nor is a split needed to make ripping optional. A machine with no optical drive
 simply doesn't install the udev rule and `abcde.conf`; the other two entry
 points are unaffected. An absent file is the cheapest feature flag available.
 
-`farfetchd` is separate for a different reason entirely — it is not a part of
-this system. It is a general-purpose downloader that behaves identically
-pointed at a Downloads folder, and it knows nothing about beets, Navidrome or
-`/srv`. That is a real boundary by the test in the next paragraph: a different
-tool, a different audience, and no requirement to be deployed here at all.
+`farfetchd` is separate for a different reason entirely — it is not part of
+this system at all. It is a general-purpose downloader that behaves
+identically pointed at a Downloads folder, and it knows nothing about beets,
+Navidrome or `/srv`. That is a real boundary by the test in the next
+paragraph: a different tool with no requirement to be deployed here.
 
 Revisit if the ripper ever needs to run on a **different machine** than the
 library — ripping on a laptop with a better drive, say. A different deployment
@@ -1606,17 +1535,13 @@ All Python, one deployment target, versioned together.
 
 **`deadwax`** — the Android app. Different language, different toolchain, different release cadence, and the only thing that might ever be published.
 
-**`farfetchd`** — a standalone CLI that downloads music from a URL — a Bandcamp release, a magnet link, whatever adapters exist — into a directory you name. **Private, permanently.**
+**`farfetchd`** — a standalone CLI that downloads a release from a URL into a directory you name. **Private, permanently.**
 
-It is not a component of this system, which is the strongest reason for a separate repo that appears anywhere in this section. `farfetchd ... -o ~/Downloads` is a complete and sensible use of it; `-o /srv/staging/fetched` is the only thing that connects it to anything here. It reads no database, serves no HTTP, ships no compose file that `lathe` depends on, and would survive this project being deleted.
+Not a component of this system, which is the strongest reason for a separate repo in this section. Pointed at `~/Downloads` it is a complete and sensible tool; `output_dir = /srv/staging/fetched` is the only thing that connects it to anything here. It reads no database, serves no HTTP, and would survive this project being deleted.
 
-That independence is also why it does no matching. It is handed a URL and fetches it. Deciding what a release actually *is* stays with beets, in the one place that already does it for rips and manual drops — so there is no second matching implementation to keep in step with the first.
-
-Private for its own reason, unrelated to the split: torrent tooling and the sources it talks to are not things to publish. But it would be a separate repo even if it were public.
+**How it works is documented in its own repo, and deliberately not here** — what it downloads from, how it is invoked, how it handles torrents, and what it needs from the network are all its business. `lathe`'s side of the boundary is one directory and one sidecar file: `docs/fetch-contract.md`, and nothing more.
 
 It is also the one place a thematic name is affordable, per the conventions below — you type it by hand, and it never appears in a `systemctl status` you are reading at 11pm.
-
-Drop contract: `docs/fetch-contract.md`.
 
 **`opensubsonic-client`** — extracted from the app **later**, once it stops changing daily. Give it a generic name rather than a Deadwax-branded one so it's useful to others.
 
