@@ -39,18 +39,13 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Unmatched albums | **Left in the inbox → swept to quarantine** | Never let a bad match pollute the library |
 | Remote access | **Tailscale** | No open ports, 10-minute setup, works on Android |
 | Backups | **restic → Backblaze B2**, cloud-only at first | Local drive deferred; adding one later is ~20 min of work |
-| Android app | **Kotlin + Jetpack Compose + Media3** | Android-only by design. Background audio, lockscreen, Bluetooth, audio focus, Android Auto and gapless are all first-party and Apache-2.0 — see §9 |
+| Client | **Deadwax**, in its own repo | Album-first Android client. Speaks OpenSubsonic like any other client; its internals are not this repo's concern — §9 |
 | Desktop client | **Navidrome's built-in web UI** | Free. Build nothing. |
-| App v1 scope | Streaming only, with local metadata cache | Offline downloads deferred to v2 (see §9) |
 | Custom API | **FastAPI**, Python | Same language as the rip scripts; small surface |
-| Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively. Deadwax implements nothing — see §9. |
-| **App philosophy** | **Album/EP only.** No playlists, no autoplay, no track shuffle | The queue *is* the album. Collapses the fiddliest part of any player. |
-| Shelf density | **2–4 across, user-selectable; name band at 2 only** | Band when there's room, tap when there isn't — keeps "the artwork speaks first" intact rather than overruled. See §9 |
+| Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively off the `stream` requests clients already make. No client implements it — §9 |
 | Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
 | Multi-disc releases | **One folder per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule, and clients still present it as *one album with disc sections* — measured, §6.5a. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
-| Search | **Subsonic `search3`** only | Artist / album / track is all that's wanted. No custom index. |
-| Distribution | **Personal, but kept releasable** | A real intent, not a hypothetical — it drives the app stack (§9), the licence, and the F-Droid-friendly package ID. No hardcoded server; spec-compliant, not Navidrome-specific |
 | Repos | **Two now** (server, app), a third later (client library) | Different languages, toolchains, and publication futures — see §14 |
 | Naming | **App gets a real name; server components stay boring** | You debug infrastructure at 11pm; you market an app |
 
@@ -170,7 +165,7 @@ Deliberately **no reverse proxy in v1** — Tailscale handles access and there's
 ### Navidrome settings to set after first boot
 
 - Create your user account (first user created becomes admin).
-- **Transcoding:** enable Opus 128k as a downsample option. Configure the Android app to request the original FLAC on WiFi and 128k Opus on cellular.
+- **Transcoding:** enable Opus 128k as a downsample option, so clients can request the original FLAC on WiFi and 128k Opus on cellular.
 - **ListenBrainz:** add your token under user settings.
 - **Scan schedule:** every 6h plus the filesystem watcher. The rip pipeline also pokes a rescan directly when it finishes, so new discs show up in seconds, not hours.
 - **Then turn `ND_ENABLETRANSCODINGCONFIG` back off.** That flag exists to let the web UI define transcoding *commands*, which is effectively remote command execution by design. It's acceptable on a single-user tailnet, but it only needs to be on for the few minutes it takes to configure Opus. Set it to `"false"` afterwards and redeploy.
@@ -975,283 +970,32 @@ Alternatives if B2 disappoints: Hetzner Storage Box (cheap, restic over SFTP), r
 
 ---
 
-## 9. Deadwax — the Android app
-
-### Stack
-
-| Layer | Choice |
-|---|---|
-| Language | **Kotlin** |
-| UI | **Jetpack Compose**, Material 3 |
-| Audio | **Media3** (`androidx.media3`) — ExoPlayer behind a `MediaLibraryService` |
-| Navigation | Navigation Compose |
-| State | `ViewModel` + `StateFlow` |
-| Local DB | **Room** |
-| Networking | Ktor Client + `kotlinx.serialization` |
-| Images | **Coil** |
-| Secrets | `EncryptedSharedPreferences` (Jetpack Security) |
-| Background work | WorkManager (v2 downloads) |
-| Hashing | `java.security.MessageDigest` — MD5 is in the JDK |
-| Build | Gradle → APK |
-
-Every line of that is first-party AndroidX or permissively licensed. No
-proprietary dependency, no JavaScript runtime, no bridge, and no dev-build
-pipeline: `./gradlew assembleRelease` produces the artefact.
-
-### Why native, and not Expo / React Native
-
-This was planned as Expo + TypeScript + RNTP v5 and reversed before any code
-existed. The reasoning is kept because the same arguments would decide any
-future reopening.
-
-**The requirement list is almost entirely native Android media plumbing.**
-Background playback, notification and lockscreen controls, Bluetooth transport
-buttons, audio focus, Android Auto, gapless. Every cross-platform option is a
-wrapper over `androidx.media3`, so going native removes a layer rather than
-adding a framework. Meanwhile the part a framework makes easy — the UI — is
-seven screens with no queue, no playlists, no sync and no autoplay, because the
-philosophy below deleted them. The usual React Native calculus inverts here: the
-half that frameworks are good at is the half this app barely has.
-
-**RNTP v5's licence collides with releasing.** It is commercially licensed and
-free for *personal use*, which was fine while this was private and stops being
-fine the moment it ships. Two independent problems, either one sufficient:
-publishing to Play or F-Droid is not personal use and would need a commercial
-licence; and a proprietary personal-use-only dependency cannot be redistributed
-inside a GPL-3.0 work (§11h), which F-Droid's inclusion policy would reject in
-any case. Since §14 picks `io.github.<username>.deadwax` *because* F-Droid
-prefers it, the old stack was aimed at a store it could not enter. Media3 is
-Apache-2.0 and the entire question disappears. (Those licence terms are as
-recorded when this plan was written — re-check them before acting on this
-paragraph if the decision is ever reopened.)
-
-**Distribution gets easier.** F-Droid packaging of a plain Gradle app is
-routine; of an Expo prebuild it is not.
-
-**Maintenance is cheaper across the years this will exist.** A solo-maintained
-released app on Expo pays an SDK-upgrade tax annually, with native-module compat
-lag each time — which is precisely what the old plan's own verification callout
-was worried about. A Gradle/Media3 app can sit untouched for two years and still
-build.
-
-**What it costs: iOS, permanently.** Already a stated non-goal (§1), and the
-differentiator is the philosophy rather than platform reach — but it is a real
-door closing, and the only thing that would justify revisiting this.
-
-> **If iOS ever becomes a goal, don't port — reconsider from scratch.** The
-> honest hedge at that point is Flutter (`just_audio` + `audio_service`:
-> permissively licensed, covers Android Auto, good gapless), not React Native.
-> Making that call under pressure with screens already built is how you end up
-> paying for two platforms and liking neither.
-
-### Auth model
-
-Subsonic uses salted-token auth in query strings. Per request:
-
-```
-salt  = random hex string (regenerate per request)
-token = md5(password + salt)
-```
-
-Sent as `?u=<user>&t=<token>&s=<salt>&v=1.16.1&c=<appname>&f=json`
-
-Store the **password** (not the token) in `EncryptedSharedPreferences`. The key property: because auth lives in the query string, `stream` URLs are self-contained — you hand the raw URL to ExoPlayer as a `MediaItem` and it plays. No custom headers, no `DataSource.Factory` shim, no auth interceptor in the audio layer.
-
-### Design philosophy — the constraint that defines the app
-
-**The queue is the album.** Nothing else is ever queued. This is not a missing feature; it is the product.
-
-What this removes, and what each removal buys:
-
-| Not built | Consequence |
-|---|---|
-| Playlists | No playlist CRUD, no sync, no reordering, ~4 endpoints dropped |
-| Autoplay / continuous play | Playback ends when the record ends. No "what's next" logic. |
-| Track shuffle | Track order is the artist's decision |
-| Arbitrary queueing | No queue persistence, no drag-to-reorder, no queue screen |
-| Song-level browsing | Search returns tracks, but they resolve to *their release* |
-
-What remains: **choose a record, put it on, listen to it.**
-
-Skip-within-album stays (you're allowed to skip a track on a record). Previous/next move within the current album only, and stop at its edges.
-
-**Starting a second album replaces the first, immediately.** "No queue" means no queue *accumulates* — it does not mean you're locked out of the controls while something is playing. On a turntable you lift the needle and put on the other record; you don't wait for side B to run out. So pressing play on album B while album A is playing stops A and starts B at track 1, with no confirmation prompt and nothing retained. The invariant to hold is that **exactly one release is loaded at any moment**, never zero-plus-a-pending-list. Anything that would make "what plays next" a question the app has to answer is the thing being excluded.
-
-### Prior art — study before designing
-
-The album-first philosophy is well established, but **only on iOS, and only against Apple Music or local files**. Nobody has built it for Subsonic on Android.
-
-- **Longplay** (iOS) — the reference implementation. Artwork-first grid, browse by cover not text, next/previous move between albums, no track shuffle. Read its feature list closely; it has solved problems you haven't hit yet.
-- **Albums**, **Album Time!**, **The Record Player** (iOS) — same philosophy, different emphases.
-- One minimal iOS/macOS Subsonic client explicitly ships without playlist support — closest existing thing, wrong platform.
-
-The gap you're filling is specifically **album-first × Android × OpenSubsonic**.
-
-### API surface for v1
-
-| Purpose | Endpoint |
-|---|---|
-| Connection test | `ping` |
-| Capability detection | `getOpenSubsonicExtensions` |
-| Release grid | `getAlbumList2` (`newest`, `random`, `byYear`, `byGenre`, `alphabeticalByArtist`, `starred`) |
-| Artist list | `getArtists` |
-| Artist detail | `getArtist` |
-| Release detail + tracks | `getAlbum` |
-| Search | `search3` |
-| Artwork | `getCoverArt` (pass `size` — request thumbnails for the grid) |
-| Playback | `stream` (with `maxBitRate`, `format`) |
-| Favourites | `star`, `unstar`, `getStarred2` |
-
-**Deliberately unused:** `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`, `getRandomSongs`, `scrobble`.
-
-**On `scrobble`:** Navidrome scrobbles to ListenBrainz server-side, off the back of the `stream` requests the app is already making. Deadwax implementing `scrobble` itself would duplicate that, and hand the app a "have we passed 50%?" progress-tracking concern for no gain. Configure the ListenBrainz token in Navidrome (§5) and the app stays ignorant of scrobbling entirely — which is also what `PHILOSOPHY.md` asks for.
-
-`getAlbumList2` gives you every browse axis you need without a single playlist. `albumtype` from MusicBrainz already distinguishes album / EP / single / compilation / live — filter on it for free.
-
-**Search behaviour:** `search3` returns artists, albums, and songs. Artists and albums navigate directly. A song result navigates to **its release, scrolled to that track** — never to an isolated song. This is the one place the philosophy needs deliberate enforcement in the UI.
-
-### Visual direction — settled
-
-Dark, hard-edged, artwork edge to edge with no gaps and almost no chrome; the
-grid *is* the app. Type is Space Grotesk. There is no chromatic accent, so
-active states are white against the near-black. Four directions were drawn and
-this one chosen over a poster-brutalist take, a mono/archival one, and a
-one-record-at-a-time crate layout.
-
-Artboards, including the three not chosen: https://claude.ai/code/artifact/71e5b3b6-5e83-42b6-9d48-6bb775a082fb
-
-Below each sleeve sits a **36px black band** carrying title and artist in white,
-with a 1px hairline above it. The band is not decoration. It is the only
-treatment whose contrast is *deterministic* over artwork nobody can audit — a
-gradient scrim, a text shadow, a backdrop blur, or sampling the cover with
-Palette to pick light-or-dark text are all "usually fine", and across 5,000
-covers "usually fine" means broken somewhere you will find by scrolling past it.
-It also costs nothing per item in a scrolling grid, where luminance sampling
-means a bitmap read per tile. The hairline does a second job: it separates tiles
-in a grid that has no gaps.
-
-### Screens (v1)
-
-1. **Setup** — server URL, username, password, connection test
-2. **Shelf** — artwork grid, the primary surface. Sort/filter control (newest, random, year, genre, artist, starred, EP vs album), and a density control beside it — see below.
-3. **Artist** — that artist's releases, as artwork
-4. **Release** — large cover, tracklist, single Play button. **Group the tracklist by `discNumber` when there is more than one**, using `discTitles` from `getAlbum` for the headings — a merged box set arrives as one album with four discs' worth of tracks (§6.5a), and rendering that as an undivided list of 60 is the one place the album-as-queue philosophy needs a visual seam. The queue stays the whole release; only the *display* is sectioned.
-5. **Search** — one field, results grouped by artist / release / track
-6. **Now Playing** — cover dominant, position within the *album* as well as the track, transport, star
-7. **Settings** — transcoding quality by network type, cache size, ListenBrainz, logout
-
-No queue screen. No playlist screen. Seven screens total, and two of them are trivial.
-
-### Keeping it releasable
-
-These cost nothing now and mean publishing later is a packaging decision rather than a rewrite:
-
-- **No hardcoded server URL, username, or password.** Ever. Not even in dev — use a `.env` that's gitignored.
-- **Target the OpenSubsonic spec, not Navidrome.** Feature-detect via `getOpenSubsonicExtensions`; never assume a Navidrome-specific behaviour.
-- **Isolate the API client** in its own module with no UI imports. It should be liftable into a standalone package.
-- **Handle spec violations gracefully.** Other servers (Gonic, Ampache, LMS, Airsonic-Advanced, Supysonic) implement the spec unevenly. Missing optional fields should degrade, not crash.
-- **Don't assume integer IDs.** Navidrome IDs are strings; other servers differ. Treat every ID as opaque.
-- **Multi-server support in the data model** even if the UI only exposes one. A `serverId` column now costs nothing; adding it later is a migration.
-- **Pick a licence early.** GPL-3.0 or MPL-2.0 if you want it to stay open.
-
-If you do release: the differentiator is the philosophy, not features. You will lose a feature race to Symfonium and Tempo instantly. The first three requests will be playlists, offline, and iOS — and **saying yes to playlists dissolves the entire point of the app.**
-
-### Local metadata cache
-
-Build this in v1 even though downloads are v2. Rationale: browsing a 5,000-album library over a Tailscale link with a round trip per screen is sluggish. Mirror albums/artists/tracks into SQLite, sync deltas on launch via `getAlbumList2` sorted by `newest`, serve the UI from local, refresh in background.
-
-This also happens to be exactly the foundation offline downloads need.
-
-### Transcoding policy
-
-- **WiFi:** request original (FLAC). Pi handles it trivially — it's just file serving.
-- **Cellular:** request `format=opus&maxBitRate=128`. Navidrome transcodes on the fly via ffmpeg. A Pi 5 handles a couple of concurrent transcodes fine.
-- Make this a user-visible setting; don't hide the choice.
-
-### Shelf density, and why not a pinch
-
-The Shelf shows **2, 3, or 4 releases across**, user-selectable, defaulting to 2.
-
-- **The band appears at 2 across and disappears at 3 and 4.** At 130dp a band
-  truncates to "Music Has the R…", which is worse than no text — so past that
-  point the covers identify themselves and metadata reverts to tap-only. This is
-  what keeps `PHILOSOPHY.md`'s "the artwork speaks first" intact rather than
-  overruled: **band when there is room, tap when there isn't.**
-- **A hairline gutter replaces the band at 3 and 4.** The grid has no gaps, so
-  with neither one, adjacent covers bleed into each other.
-- **Capped at 4.** At 6 across the tiles are 65dp, sleeves stop being
-  distinguishable, and browsing by cover — the one thing the app is for — stops
-  working.
-- **Starts at 2, not 1.** One across is the crate layout that was drawn and not
-  chosen, and it is close to unusable for finding anything among 5,000 releases.
-  Adding it back is a one-line change if it turns out to be missed.
-
-**The control is a cycling glyph in the Shelf's top bar, next to the sort
-control — not a slider, and not a pinch.**
-
-A slider implies a continuum over what is three discrete values, and a Material
-slider is the component vocabulary the philosophy exists to reject. Pinch is
-worse than it first appears: the gesture is continuous and the outcome is
-quantised, so unless the grid reflows continuously under your fingers and snaps
-on release, it reads as a jarring jump bearing no relation to how far you
-pinched. Doing it properly needs a custom layout that interpolates between
-column counts, because `LazyVerticalGrid` does not reflow mid-gesture — real
-work, and not v1 work.
-
-A gesture also needs a visible control or nobody finds it. So the glyph is not
-the fallback; it is the thing that has to exist. Pinch can be layered on later,
-once there is something to layer it onto.
-
-### Cover art sizes — request from a fixed ladder
-
-`getCoverArt` takes an optional `size`, and that value lands in the URL, which
-is what every image cache keys on. `size=585` and `size=390` are two entries for
-the same cover, sharing nothing.
-
-Derive `size` from the tile width and the numbers fall out of the layout: on a
-390dp screen at 3x, 2 across needs 585px, 3 across 390px, 4 across 292px. Change
-density and every cover re-fetches from the Pi over Tailscale, while the old
-entries sit in the cache until LRU evicts them — three copies of the library at
-slightly different sizes, and an effective cache a third of its configured size.
-A different screen width produces a fourth and fifth set of numbers.
-
-So round **up** to a fixed ladder, and never request anything else:
-
-| Bucket | Used for |
-|---|---|
-| 160 | Now Playing strip, search result rows |
-| 320 | dense grid — 3 and 4 across |
-| 640 | roomy grid — 2 across, Release screen header |
-| 1280 | Now Playing full-bleed artwork |
-
-2 across (585) and 3 across (390) both round to 640, so they share one cache
-entry and switching between them is instant and needs no network. Only 4 across
-drops a bucket, and it is the cheapest one. Downscaling 640 into a 292px slot is
-free on device and looks better than upscaling — let Coil do the final resize.
-
-- **Never derive the bucket from screen width.** A fixed ladder keeps the cache
-  predictable and portable across devices.
-- **Navidrome caches its own resized copies.** Repeated bucket values are cheap
-  server-side too; arbitrary per-device numbers make it generate and store a new
-  variant for every distinct value, churning the Pi's cache as well as yours.
-- **`size` is honoured unevenly** — some servers ignore it and return the
-  original. Never assume the bytes match the request; resize on device anyway.
-  Same reasoning as the rest of "Keeping it releasable".
-- **Pass the object's `coverArt` field, not the album id**, and treat it as
-  opaque.
-
-### v2: offline downloads
-
-Deferred, but designed for:
-
-- `downloads` table: `trackId`, `releaseId`, `state` (queued/downloading/complete/failed), `localPath`, `bytesTotal`, `bytesDone`
-- **Releases are the only download unit.** Consistent with everything else — you don't download half a record.
-- WorkManager + Ktor for transfers — resumable, and correct across process death
-- User-set disk quota with LRU eviction
-- Now Playing resolves `localPath` first, falls back to `stream` URL
-- Visual state on album tiles: not downloaded / partial / complete / stale
-
-Media3's `SimpleCache` behind a `CacheDataSource` is a partial substitute in the meantime — it'll cover the "song I played an hour ago" case but not "prepare for a flight."
+## 9. Deadwax — the Android client
+
+**Deadwax** is the album-first Android client. Separate repo, separate language,
+separate release cadence, and the only part of this project that might ever be
+published.
+
+It is deliberately **not** a component of this system. It talks to Navidrome over
+the OpenSubsonic API exactly as any third-party client would, targets the spec
+rather than Navidrome specifically, and hardcodes nothing about this server.
+Point it at Gonic or Ampache and it works. That decoupling is the whole pitch
+(see the naming note in §14), so its internals do not belong in this document
+and nothing here may come to depend on them.
+
+What this server owes it is only what it owes any client: a spec-compliant
+OpenSubsonic endpoint, one `cover.jpg` per folder (§6.6), correct `albumtype` and
+`discNumber` tags out of beets (§6.3), Opus transcoding enabled, and a long
+`ND_SESSIONTIMEOUT` (§5).
+
+The one thing worth knowing on this side: **Deadwax implements no scrobbling.**
+Navidrome scrobbles to ListenBrainz server-side off the `stream` requests the app
+already makes, so the token goes in Navidrome's config (§5) and the app stays
+ignorant of it entirely. Configure it there or it does not happen.
+
+Stack, screens, API surface, visual direction and build phases live in
+`docs/plan.md` in the `deadwax` repo; the product constraints live in
+`PHILOSOPHY.md` beside it.
 
 ---
 
@@ -1419,39 +1163,36 @@ Mostly FLAC, since that's the archive format and ReplayGain-via-ffmpeg needs tes
 
 Broken cases are **synthesised, not sourced** — strip tags off a copy to exercise `quiet_fallback: skip`, embed art in another to confirm `scrub` removes it, scatter `.cue`/`.nfo`/`Thumbs.db` to give `lint.py` something to find. Synthetic is better: you control exactly what's wrong.
 
-**c) Validate the app concept before building it**
+**c) Deadwax is unblocked, and tracked in its own repo**
 
-Run the stock clients — Symfonium, Tempo, Substreamer — against local Navidrome for half an hour. Either this confirms the album-only instinct or it saves you from building the wrong thing. Then study Longplay properly and sketch the seven screens.
+The app needs no Pi — it develops against the laptop Navidrome from (a). One
+piece of it is worth doing early whatever happens to the app: run the stock
+clients (Symfonium, Tempo, Substreamer) against that instance for half an hour,
+which either confirms the album-only instinct or saves you from building the
+wrong thing. Everything past that lives in `deadwax/docs/plan.md`.
 
-**d) Start the Android app (Phase 5 work, fully unblocked)**
+Populate the test library with a few hundred albums if you can — it makes
+pagination and scroll assumptions realistic rather than flattering, and it gives
+`lint.py` something real to chew on too.
 
-The largest single chunk in the plan, and it needs no Pi:
-
-- Gradle scaffold, a `MediaLibraryService` wired up, audio playing at all
-- The Subsonic client module: salted-token auth, `MessageDigest` MD5, capability detection via `getOpenSubsonicExtensions`
-- Room schema, sync logic
-- Shelf and Release screens against local Navidrome
-
-Populate the test library with a few hundred albums if you can, so pagination and scroll performance assumptions are realistic rather than flattering.
-
-**e) Write `lint.py` (§6.6)**
+**d) Write `lint.py` (§6.6)**
 
 Pure Python over a directory tree, no server dependency. Run it against the current messy library — it will immediately tell you how much cleanup Phase 1 involves.
 
-**f) Scaffold `libraryd` against fake data**
+**e) Scaffold `libraryd` against fake data**
 
 The dashboard, quarantine review, and violations view all work off JSON. Only `/eject` and live rip progress need real hardware.
 
-**g) Do the entire backup flow end to end**
+**f) Do the entire backup flow end to end**
 
 Backblaze account, restic repo, back up a small folder, **and do a restore test**. Practising restore at 2GB is the right order of operations; practising at 300GB is not.
 
-**h) Housekeeping**
+**g) Housekeeping**
 
 - Install Tailscale on phone and laptop, get comfortable with it
 - Download the Pi OS Lite 64-bit image
-- Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**, and after the §9 stack change every dependency is first-party AndroidX or Apache-2.0, so nothing obstructs it; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
-- Settle the §13 open questions — offline downloads is **decided: v2**, per `PHILOSOPHY.md`
+- Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
+- Settle the §13 open questions
 
 **Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the collection into `/srv/inbox/` and let beets file it.
 
@@ -1504,11 +1245,10 @@ drive; the half that does is small and mostly config.
 - **Done when:** a restore test has actually succeeded — and the first full upload didn't ruin anyone's week
 
 ### Phase 5 — Android app
-- Gradle scaffold, Media3 `MediaLibraryService` wired up
-- Subsonic API client in its own module, salted-token auth, capability detection
-- Room metadata cache + sync
-- Screens 1–7
-- **Done when:** it's the app you reach for instead of the stock client — and nothing in it can queue anything but a release
+Tracked in the `deadwax` repo, not here. Nothing in this repo blocks it and
+nothing in it blocks this repo — it needs only a reachable OpenSubsonic endpoint,
+which Phase 1 already provides.
+- **Done when:** it's the app you reach for instead of the stock client
 
 ### Phase 6 — libraryd
 - FastAPI service, endpoints above
@@ -1516,26 +1256,22 @@ drive; the half that does is small and mostly config.
 - **Done when:** you can resolve a bad match from your phone
 
 ### Phase 7 — v2 features
-- Offline downloads
-- Android Auto — with `MediaLibraryService` already in place the browse tree is most of the remaining work, so this may well land before the rest of v2
+- `/releases/merge` in `libraryd` (§10), if merging box sets by hand gets tiring
 - Whatever you actually miss by then
+- App-side v2 — offline downloads, Android Auto — is tracked in `deadwax`
 
 ---
 
 ## 12. Gotchas
 
 - **udev `RUN+=` kills long processes.** Dispatch to systemd. Non-negotiable.
-- **A media foreground service needs `foregroundServiceType="mediaPlayback"`** in the manifest *and* the runtime notification permission on Android 13+. Miss either and playback dies the moment the app leaves the foreground — which presents as an audio bug and isn't one.
 - **Mount the library drive by UUID**, never `/dev/sda1`. Device order changes when you plug in the optical drive.
 - **First Navidrome scan of a large library is slow** on a Pi. Let it finish before judging performance.
-- **Some Subsonic clients coerce IDs to integers.** Navidrome IDs are strings. If you write your own client, don't make that mistake.
 - **abcde with `-Z` won't tell you loudly about read errors.** That's why per-disc logging is in Phase 3, not optional.
 - **Set `ND_SESSIONTIMEOUT` long.** Default logs you out inconveniently often on mobile.
 - **beets `incremental: yes` uses a state file** — if you move directories around manually, it gets confused. Let beets own `/srv/music`.
 - **HDD spin-down** can cause a 5–10s stall on first play. Either disable it (`hdparm -S 0`) or accept it. For an always-on server, disabling is fine and probably better for drive life than constant spin cycles.
 - **Verify the `inline` plugin's `multidisc` expression** before importing a box set, or you'll refile a lot of files twice.
-- **Gapless matters more in an album-only app** than in a normal one, because you'll notice every seam on a continuous record. Test with a live album early.
-- **A song result in search must never become a standalone queue.** It's the one spot where the philosophy is easy to violate by accident.
 - **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
 - **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
 - **Never edit a deployed copy.** `/usr/local/bin/autorip.sh`, `/etc/abcde.conf` and the systemd units are all copies of files in this repo. Editing them in place works, which is the problem: the repo silently stops describing the running system, and the next deploy reverts the fix without warning. Edit here, deploy from here — see §11.
@@ -1543,18 +1279,14 @@ drive; the half that does is small and mostly config.
 - **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
 - **`find -newermt "-120 seconds"` is a GNU extension.** Other `find` implementations reject it, and if the error is suppressed the result reads as "nothing changed recently" — so a settle-check built on it silently concludes the copy has finished and imports mid-write. Use a reference file with POSIX `-newer`, and don't suppress the error.
-- **Don't take a dependency that is free "for personal use".** It quietly caps the whole project at personal use, and you find out at the point of release when it is most expensive. That is what removed the original React Native stack (§9); apply the same check to anything new.
 
 ---
 
 ## 13. Still open
 
-- ~~**Offline downloads: v1 or v2?**~~ **Settled: v2**, per `PHILOSOPHY.md`. The local metadata cache still ships in v1, which is the foundation downloads need — so this stays cheap to add later.
-- ~~**Gapless playback.**~~ **Largely settled by the stack change (§9):** ExoPlayer does gapless natively across a playlist of `MediaItem`s, which is the exact shape an album already has. The residual risk is the transcode rather than the player — on WiFi you request original FLAC and it's clean, while per-track Opus transcodes on cellular can reintroduce a seam. Test both with a continuous live record.
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
-- **Whether to release the app at all.** Deferred by design — Phase 5 keeps the option open at no cost. Decide once it's something you actually use daily.
 
 ---
 
@@ -1573,7 +1305,6 @@ Worth being precise about this, because it prevents over-splitting:
 | `fetchd` | A second long-running service, in the separate `farfetchd` repo |
 | Dashboard | A frontend served by `libraryd` |
 | Deadwax | An Android client |
-| Subsonic client | A library inside Deadwax |
 | Navidrome | Third-party — you write config, not code |
 
 The first four **do not talk over HTTP**. They integrate through the filesystem contract in `/srv`: the ripper writes FLACs into `/srv/inbox/` and a JSON log per disc, the ingest pipeline consumes whatever appears in the inbox, the linter writes `lint.json`, and `libraryd` reads all of it. They share a machine, a language, a user account, and a directory layout.
@@ -1625,7 +1356,11 @@ All Python, one deployment target, versioned together.
 >
 > `lathe` is the cutting lathe that carves a master lacquer — including the run-out groove the app is named after. It reads as machinery rather than product, which is the right signal for a repo that is mostly config, systemd units, and personal paths rather than anything installable by a stranger.
 
-**`deadwax`** — the Android app. Different language, different toolchain, different release cadence, and the only thing that might ever be published.
+**`deadwax`** — the album-first Android client. Different language, different toolchain, different release cadence, and the only thing here that might ever be published.
+
+It earns its split for the mirror-image reason to `farfetchd`: not because it is permanently private, but because it is the one part that might not be. It also integrates at the greatest distance of anything in this project — over the OpenSubsonic API, exactly as a third-party client would — so neither repo can constrain the other, and the app stays useful to someone who has never heard of `lathe`.
+
+Its own plan and product constraints live beside it: `docs/plan.md` and `PHILOSOPHY.md`.
 
 **`farfetchd`** — fetches releases from a site that hosts them for free download, drops them in `/srv/staging/fetched/` for review. **Private, permanently.**
 
@@ -1637,9 +1372,7 @@ The daemon inside it is `fetchd` — boring, per the convention below. The repo 
 
 Interface spec: `docs/fetch-contract.md`.
 
-**`opensubsonic-client`** — extracted from the app **later**, once it stops changing daily. Give it a generic name rather than a Deadwax-branded one so it's useful to others.
-
-> **Don't extract the client library early.** Live with a `subsonic` Gradle module inside the app repo, enforce the no-UI-imports rule from day one, and pull it out when it's stable. Premature extraction means a composite build or a Maven publish and a version bump for every fix, during exactly the phase when you're changing it constantly.
+**`opensubsonic-client`** — extracted from `deadwax` **later**, once it stops changing daily, under a generic name rather than a Deadwax-branded one so it's useful to others. Timing and rationale are that repo's business.
 
 The real justification for splitting server from app isn't technical — it's that they have **different publication futures**. The app is the thing you might open-source; the server repo has your paths and your setup in it. Separate repos means "should I publish this?" is answered per-repo rather than per-directory.
 
@@ -1651,16 +1384,4 @@ A monorepo is also defensible for a solo project and gives you atomic cross-cutt
 
 *(§10 originally called the API service `ripd`. Since it covers lint, library operations and stats as well as rips, **`libraryd` is the name — settled**, and used consistently throughout this document, in `docker-compose.yml`, and as the directory in the repo.)*
 
-**App side: Deadwax.** Public-facing, and the name that has to do work.
-
-Three things it locks in:
-
-- **Android package ID** — `io.github.<username>.deadwax` (free, no domain needed). Effectively permanent once published.
-- **Subsonic `c=` parameter** — `Deadwax`. This is the client identifier on every API call, so it appears in Navidrome's logs and in the logs of any other server if you release it.
-- **Repo, F-Droid, and Play listing names.**
-
-**Collision check — partial.** Clear on GitHub, F-Droid, and Google Play. (npm was the namespace to check under the old stack; if `opensubsonic-client` is ever extracted and published it's Maven Central that matters, and that hasn't been checked.) **Not clear conceptually:** at least two vinyl-collection apps named Deadwax exist on iOS (Discogs collection managers / pressing identification), and `deadwax.app`, `deadwax.io` and `deadwaxhq.com` are all taken. Also adjacent: **DeaDBeeF**, an open-source audio player since 2009.
-
-Irrelevant for a personal Android project. If this is ever published, expect to be the third or fourth Deadwax in the music space and to spend effort distinguishing yourself. Runners-up that avoid the collector-app space entirely: **Gatefold**, **Spindle**, **Lacquer**.
-
-**Lock in early:** register the GitHub repos. For the Android package ID, use `io.github.<username>.deadwax` — free, conventional, maps to a namespace you control, and preferred by F-Droid. The package ID cannot be changed after publishing — decide it deliberately rather than typing something provisional into `app.json`.
+**App side: Deadwax.** Public-facing, and the name that has to do work. It locks in the Android package ID (permanent once published), the store listing names, and the Subsonic `c=` client identifier — which is the only one of the three that shows up on this side, in Navidrome's logs. The collision check and the runners-up are recorded in the `deadwax` repo.
