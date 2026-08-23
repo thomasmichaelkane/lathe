@@ -105,10 +105,13 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   music/            # THE LIBRARY. Navidrome mounts this read-only.
   staging/
     rips/           # abcde output lands here, then moves to /srv/inbox/ (§6.2)
-    fetched/        # farfetchd drops here, awaiting human review (see docs/fetch-contract.md)
+    fetched/        # completed downloads land here, awaiting human review (see docs/fetch-contract.md)
     incoming/       # rsync landing area for uploads. UNWATCHED — see §6.5
   quarantine/       # beets could not confidently match these
   inbox/            # manual drops: Bandcamp, purchases, existing collection
+  torrents/         # a torrent client's own downloads, if you run one here.
+                    # The seed copy: never moved, never retagged, never
+                    # imported. See docs/fetch-contract.md
   config/
     navidrome/      # SQLite DB, cache
     beets/          # config.yaml, library.db
@@ -280,7 +283,7 @@ finishes:
 **The move must be a rename, not a copy.** `/srv/staging` and `/srv/inbox` are
 on the same filesystem, so `mv` is a single atomic `rename(2)` and the path
 unit watching `/srv/inbox/` can never observe a half-written album. This is the
-same completeness trick `push-music.sh` uses for uploads and `fetch.json` uses
+same completeness trick `push-music.sh` uses for uploads and `fetched.json` uses
 for fetches — it is why none of the three entry points needs a lock.
 
 The destination name is for humans only. It is what you read in the inbox, or
@@ -710,7 +713,7 @@ something automated *chose* what to retrieve. Approving moves the directory to
 existing path unit takes over. No second pipeline, no new systemd units.
 
 **All three converge on `/srv/inbox/`.** Whatever produced the files —
-cdparanoia, rsync, `fetchd` — the last step is always an atomic move into the
+cdparanoia, rsync, `farfetchd` — the last step is always an atomic move into the
 inbox, and everything downstream of it is shared. `autorip@.service` and
 `inbox.path` are separate units with no ordering relationship between them and
 no knowledge of each other; the filesystem is the only thing that passes from
@@ -743,7 +746,7 @@ network transfer.
 
 `/srv/staging/incoming/` is not watched, and both directories are on the same
 filesystem, so the `mv` is atomic and albums appear in the inbox complete or
-not at all. Same principle as `farfetchd` writing `fetch.json` last.
+not at all. Same principle as `farfetchd` writing `fetched.json` last.
 
 `inbox-import.sh` **also** waits for the inbox to go quiet for two minutes
 before importing, as a safety net for the times something gets copied in
@@ -1180,7 +1183,7 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 | POST | `/quarantine/{id}/retry` | Move back to the inbox unchanged for another import attempt |
 | POST | `/quarantine/{id}/resolve` | Apply a chosen MusicBrainz release ID, re-run beets import |
 | DELETE | `/quarantine/{id}` | Delete the directory |
-| GET | `/fetched` | Releases `farfetchd` retrieved, awaiting review |
+| GET | `/fetched` | Completed downloads awaiting review |
 | POST | `/fetched/{id}/approve` | Move to `/srv/inbox/` for the normal beets import |
 | POST | `/fetched/{id}/reject` | Delete the directory |
 | GET | `/library/violations` | Lint results from §6.6 — junk files, artwork problems, metadata gaps |
@@ -1477,7 +1480,7 @@ Worth being precise about this, because it prevents over-splitting:
 | Ingest pipeline | Path-triggered batch job (`inbox.path` → `inbox-import.sh`). The only thing that runs beets |
 | Linter | Scheduled batch job |
 | `libraryd` API | The only long-running HTTP service in this repo |
-| `fetchd` | A second long-running service, in the separate `farfetchd` repo |
+| `farfetchd` | Not part of this system at all — a standalone CLI in a separate repo that drops files in a directory and exits |
 | Dashboard | A frontend served by `libraryd` |
 | Deadwax | An Android client |
 | Subsonic client | A library inside Deadwax |
@@ -1501,10 +1504,11 @@ Nor is a split needed to make ripping optional. A machine with no optical drive
 simply doesn't install the udev rule and `abcde.conf`; the other two entry
 points are unaffected. An absent file is the cheapest feature flag available.
 
-`farfetchd` is separate for a different reason entirely — it is permanently
-private. That is a *distribution* boundary, not a modularity one, and the
-~150-line contract document it needs is a fair illustration of what the second
-kind costs.
+`farfetchd` is separate for a different reason entirely — it is not a part of
+this system. It is a general-purpose downloader that behaves identically
+pointed at a Downloads folder, and it knows nothing about beets, Navidrome or
+`/srv`. That is a real boundary by the test in the next paragraph: a different
+tool, a different audience, and no requirement to be deployed here at all.
 
 Revisit if the ripper ever needs to run on a **different machine** than the
 library — ripping on a laptop with a better drive, say. A different deployment
@@ -1534,15 +1538,17 @@ All Python, one deployment target, versioned together.
 
 **`deadwax`** — the Android app. Different language, different toolchain, different release cadence, and the only thing that might ever be published.
 
-**`farfetchd`** — fetches releases from a site that hosts them for free download, drops them in `/srv/staging/fetched/` for review. **Private, permanently.**
+**`farfetchd`** — a standalone CLI that downloads music from a URL — a Bandcamp release, a magnet link, whatever adapters exist — into a directory you name. **Private, permanently.**
 
-Split out for the same reason the app is: a different publication future. `lathe` could plausibly be published with paths scrubbed; this one never will be. Deciding that per-repo rather than per-directory is the whole argument from the bottom of this section.
+It is not a component of this system, which is the strongest reason for a separate repo that appears anywhere in this section. `farfetchd ... -o ~/Downloads` is a complete and sensible use of it; `-o /srv/staging/fetched` is the only thing that connects it to anything here. It reads no database, serves no HTTP, ships no compose file that `lathe` depends on, and would survive this project being deleted.
 
-It earns the split cheaply because it integrates the same way everything else here does — through the filesystem, not HTTP. It writes one directory and a sidecar JSON; `libraryd` reads them. It never reads beets' database, never queries Navidrome, never touches `/srv/music`. One-directional coupling means either repo can be rewritten without touching the other. It also ships its own compose file and mounts only `/srv/staging/fetched`, so `lathe` stays deployable on its own rather than depending on a build path into a sibling private repo.
+That independence is also why it does no matching. It is handed a URL and fetches it. Deciding what a release actually *is* stays with beets, in the one place that already does it for rips and manual drops — so there is no second matching implementation to keep in step with the first.
 
-The daemon inside it is `fetchd` — boring, per the convention below. The repo carries the joke; the thing you read in `systemctl status` does not.
+Private for its own reason, unrelated to the split: torrent tooling and the sources it talks to are not things to publish. But it would be a separate repo even if it were public.
 
-Interface spec: `docs/fetch-contract.md`.
+It is also the one place a thematic name is affordable, per the conventions below — you type it by hand, and it never appears in a `systemctl status` you are reading at 11pm.
+
+Drop contract: `docs/fetch-contract.md`.
 
 **`opensubsonic-client`** — extracted from the app **later**, once it stops changing daily. Give it a generic name rather than a Deadwax-branded one so it's useful to others.
 
