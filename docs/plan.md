@@ -1075,7 +1075,7 @@ because almost nothing runs from where it is checked out:
 | `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
 | `systemd/*.service`, `systemd/*.path` | `/etc/systemd/system/` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
-| `compose/docker-compose.yml` *(not written yet — §5 holds it inline)* | wherever you run `docker compose` |
+| `compose/docker-compose.yml` | **nothing — it runs from the checkout** (see below) |
 
 Copying these by hand is fine exactly once. After that it is a trap, and a
 quiet one: **edit the repo copy and deploy it, never edit the deployed copy.**
@@ -1084,10 +1084,45 @@ works — and from then on the repo describes a system that no longer exists,
 which is worse than having no repo at all. The next `git pull` and re-copy then
 silently reverts the fix.
 
-An `install.sh` that copies the table above, `systemctl daemon-reload`s and
-`udevadm control --reload`s is the obvious fix and is maybe thirty lines.
-Write it in Phase 3, when there is finally more than one file to deploy — and
-make it the *only* way anything reaches a system path.
+`install.sh` is that copy table, and it is the only thing that should ever
+write to those paths:
+
+```sh
+sudo ./install.sh --dry-run    # show what would change, touch nothing
+sudo ./install.sh              # deploy
+```
+
+An update is `git pull` followed by `sudo ./install.sh`. It replaces code and
+never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
+beets' `library.db` and `state.pickle`, and Navidrome's database are all
+untouched, so a backlog sitting in quarantine has no bearing on a deploy.
+
+`compose/docker-compose.yml` is deliberately not in the table. It runs from the
+checkout, so there is no deployed copy to drift from and pulling the repo is the
+whole update. Navidrome itself updates on its own axis, with
+`docker compose pull && docker compose up -d`.
+
+Three things in the script are worth knowing about, because each exists for a
+failure that is silent:
+
+- **Files are renamed into place, never copied over.** `cp` truncates the
+  destination in place, and bash reads a script incrementally as it runs it, so
+  copying over `/usr/local/bin/inbox-import.sh` during a bulk import — which is
+  a `oneshot` with a six-hour timeout and will legitimately run for hours —
+  makes the running shell resume at its old byte offset in different content
+  and execute whatever it finds. Measured: the `cp` case dies with `unexpected
+  EOF while looking for matching '"'`, the rename case finishes cleanly on the
+  old version. The script also refuses to deploy while an ingest unit is active;
+  `--force` skips that check, and is safe precisely because of the rename.
+- **It re-checks that `/srv/inbox` and `/srv/staging` share a filesystem.**
+  Nothing else does, and if a remount ever splits them the atomic hand-off
+  quietly becomes copy-then-delete — §12.
+- **`/srv/config/beets/` gets named files copied into it, never a sync.**
+  `library.db` and `state.pickle` live in that directory; clearing it would
+  reset `incremental` and lose the library database.
+
+`/etc/default/autorip` is created once with `NTFY_URL` empty and never
+overwritten — it holds a live ntfy topic, which is why it is not in the repo.
 
 ### Phase −1 — Before the hardware arrives
 
@@ -1233,7 +1268,7 @@ drive; the half that does is small and mostly config.
 - `/srv/inbox/` path unit + `inbox-import.sh` **first** — it is the consumer everything else feeds (settle wait, quarantine sweep, ntfy, Navidrome rescan poke)
 - `autorip.sh`, the systemd template unit, the udev rule
 - Per-disc logging, error detection, atomic hand-off into `/srv/inbox/`, auto-eject
-- `install.sh` — copy the repo into the system paths, reload systemd and udev. From here on it is the only way anything gets deployed.
+- `install.sh` — **written**. Copies the repo into the system paths, reloads systemd and udev. From here on it is the only way anything gets deployed; see the copy table in 11.
 - Verify the read-error grep patterns in `autorip.sh` against a **deliberately scratched disc**. `autorip-test.sh` stubs the rip, so a pattern that never matches is indistinguishable from a clean rip until a real bad disc proves otherwise.
 - `lint.py` (§6.6) + nightly timer
 - Rip a real multi-disc set one disc at a time, confirm both discs quarantine, and put them back together with `quarantine.py groups` → `merge` (§6.5a). This is the one path with no automated cover, and it is the path a box set takes every time.
