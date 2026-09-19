@@ -120,6 +120,25 @@ This rule has no exceptions, including the initial migration. The existing colle
 
 Create a dedicated `music` user (uid 1001) owning all of `/srv`. Run containers and the rip service as that user.
 
+**The library drive is mounted at `/srv` as a whole — settled 2026-09-20 — not
+at `/srv/music`.** Three reasons, in order of how expensive getting it wrong
+is:
+
+1. `staging`, `inbox` and `music` all land on one filesystem, so every hand-off
+   in §6.5 is a real rename. Mount them apart and `mv` silently becomes
+   copy-then-delete, the path unit fires partway through, and beets imports a
+   half-written album — §12.
+2. The SQLite databases (Navidrome's, beets' `library.db`) stay off the boot
+   media. While the Pi is still on the microSD that matters for write wear; it
+   matters for corruption on an unclean shutdown either way.
+3. Boot media becomes disposable. Moving the OS from SD to NVMe is then a pure
+   OS copy with nothing about the library involved.
+
+The consequence to keep in mind is that `install.sh` writes two files onto the
+library drive — `/srv/config/beets/config.yaml` and the plugins — so the beets
+config is the one deployed artifact not on the OS drive. Everything else it
+touches is under `/usr/local/bin` and `/etc`.
+
 ---
 
 ## 5. Server stack
@@ -1098,7 +1117,7 @@ because almost nothing runs from where it is checked out:
 | `ingest/abcde.conf` | `/etc/abcde.conf` |
 | `ingest/beets/config.yaml` | `/srv/config/beets/config.yaml` |
 | `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
-| `systemd/*.service`, `systemd/*.path` | `/etc/systemd/system/` |
+| `systemd/*.service`, `systemd/*.path`, `systemd/*.timer` | `/etc/systemd/system/` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
 | `compose/docker-compose.yml` | **nothing — it runs from the checkout** (see below) |
 
@@ -1145,6 +1164,13 @@ failure that is silent:
 - **`/srv/config/beets/` gets named files copied into it, never a sync.**
   `library.db` and `state.pickle` live in that directory; clearing it would
   reset `incremental` and lose the library database.
+- **Every `.path` and `.timer` in `systemd/` is deployed and enabled**, and
+  restarted when its unit file changes. `.service` units are deployed but never
+  enabled — `autorip@.service` is templated and started by udev,
+  `inbox-import.service` by its path unit. The `.timer` glob is there ahead of
+  `lint` (§6.6) and `restic` (§8), because a unit type missing from it is not
+  an error anywhere: the file just never arrives, and a timer that was never
+  deployed looks exactly like a timer that never fired.
 
 `/etc/default/lathe` is created once with everything unset and never
 overwritten. It holds the ntfy topic and the Navidrome login, is 0600
@@ -1284,7 +1310,7 @@ paths with setgid inboxes — all of which are Phase 1.
 ### Phase 0 — Base
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
-- Create `music` user (uid 1001), create `/srv` tree, mount library drive by UUID in `/etc/fstab`
+- Create `music` user (uid 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
 - **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
 - **Done when:** you can SSH in over Tailscale from your phone's hotspot
