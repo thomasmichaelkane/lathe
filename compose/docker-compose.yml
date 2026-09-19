@@ -1,0 +1,80 @@
+# The server stack. Run from this directory:
+#
+#   docker compose up -d
+#
+# This file is deliberately NOT copied to a system path by install.sh. There is
+# no deployed copy to drift from — compose runs from the checkout, so `git pull`
+# is the whole update. See §11 of docs/plan.md.
+#
+# Updating Navidrome itself is a separate axis from install.sh:
+#
+#   docker compose pull && docker compose up -d
+#
+# Its state lives in /srv/config/navidrome on the library drive, so the
+# container is disposable and a bad release rolls back by pinning the tag below.
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    restart: unless-stopped
+
+    # The `music` user (Phase 0) owns all of /srv. Navidrome runs as it rather
+    # than root so the one writable mount below can't be used to write anything
+    # root-owned into the library drive.
+    user: "1001:1001"
+
+    ports:
+      - "4533:4533"
+
+    environment:
+      ND_MUSICFOLDER: /music
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: info
+
+      # The filesystem watcher catches new albums quickly; this is the backstop
+      # for anything it misses. The first scan of a full library is slow on a
+      # Pi — let it finish before judging performance (§12).
+      ND_SCANSCHEDULE: "@every 6h"
+
+      # Default logs you out inconveniently often on mobile (§12).
+      ND_SESSIONTIMEOUT: 720h
+
+      # TURN THIS OFF AFTER FIRST BOOT.
+      #
+      # It exists to let the web UI define transcoding *commands*, which is
+      # remote command execution by design. It is acceptable on a single-user
+      # tailnet for the few minutes it takes to configure Opus 128k, and not
+      # after that. Set "false" and `docker compose up -d` again — §5.
+      ND_ENABLETRANSCODINGCONFIG: "true"
+
+      ND_DEFAULTTHEME: Dark
+
+    volumes:
+      # Read-only is the enforcement of "nothing writes to /srv/music except
+      # beets" (§4). Navidrome has no reason to write here and this guarantees
+      # a bug in it can never rearrange the library.
+      - /srv/music:/music:ro
+      - /srv/config/navidrome:/data
+
+# libraryd is deliberately absent until Phase 6.
+#
+# §5 of the plan lists it here with `build: ./libraryd`, but the only thing in
+# libraryd/ today is quarantine.py — a standalone CLI that needs no container
+# and no server, and is the tool for the Phase 1 quarantine evening. There is
+# no Dockerfile, so leaving the stanza in would mean `docker compose up` fails
+# on a fresh Pi for a service that does nothing yet.
+#
+# Phase 6 adds it back, roughly:
+#
+#   libraryd:
+#     build: ./libraryd
+#     container_name: libraryd
+#     restart: unless-stopped
+#     user: "1001:1001"
+#     ports:
+#       - "8080:8080"
+#     environment:
+#       NAVIDROME_URL: http://navidrome:4533
+#     volumes:
+#       - /srv:/srv
