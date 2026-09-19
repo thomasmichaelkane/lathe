@@ -659,16 +659,41 @@ album has not been imported yet.
 **`inbox-import.sh` notifies**, because it is the only thing that knows the
 outcome:
 
-1. POST to Navidrome's rescan endpoint so new albums appear immediately.
+1. Poke Navidrome's `startScan` endpoint so new albums appear immediately.
 2. Push via **ntfy** — self-hosted or ntfy.sh with a random topic. Message: how
    many albums imported, how many went to quarantine, and their names.
+
+Both are configured in `/etc/default/lathe` (§11) and both are optional. Unset
+means the step is skipped and logged; neither can fail an import that has
+already succeeded, which is why every failure in them is swallowed after being
+logged. The rescan is skipped entirely when nothing was imported — a first bulk
+import where everything quarantines has not changed the library.
+
+The rescan uses Subsonic token auth (`t=md5(password+salt)`), so the password
+is not sent over the wire, but it is stored in plain text in
+`/etc/default/lathe` — hence 0600 and root ownership. Losing the poke costs
+latency and nothing else: the scheduled scan and the filesystem watcher still
+find everything, which is why a failure here is a log line rather than a
+non-zero exit.
+
+Album names are listed in the push up to `NOTIFY_MAX_NAMES` (default 10) and
+the rest collapse into a count, so a 300-album migration that mostly
+quarantines does not arrive as a 300-line notification.
 
 Putting both on the ingest side means all three entry points get them. Under
 the previous design only rips poked Navidrome, so a manual drop or an approved
 fetch stayed invisible until the next scheduled scan — a bug avoided here by
 accident.
 
-**Failure is the exception, and it belongs to the ripper.** A rip that never
+**One failure belongs here rather than to the ripper:** a MusicBrainz outage
+during pass 1 aborts the run before the Bandcamp pass and before the quarantine
+sweep, leaving the inbox untouched (§6.5). `autorip.sh` cannot see that — it
+handed off and exited long before — and the album is *not* in the library
+despite the disc having ripped and ejected cleanly. So that abort pushes at
+high priority from here. It is the exception that proves the rule below: the
+component that knows is the component that reports.
+
+**Every other failure belongs to the ripper.** A rip that never
 reaches the inbox is something `inbox-import.sh` will never see and therefore
 can never report — it would simply be silent. So `autorip.sh` sends its own
 ntfy push when abcde exits non-zero, produces no audio, or produces something
@@ -1121,8 +1146,12 @@ failure that is silent:
   `library.db` and `state.pickle` live in that directory; clearing it would
   reset `incremental` and lose the library database.
 
-`/etc/default/autorip` is created once with `NTFY_URL` empty and never
-overwritten — it holds a live ntfy topic, which is why it is not in the repo.
+`/etc/default/lathe` is created once with everything unset and never
+overwritten. It holds the ntfy topic and the Navidrome login, is 0600
+root-owned, and is shared by `autorip@.service` and `inbox-import.service` —
+one topic for the whole system, set once. Nothing in it is required: unset
+means the notification or the rescan is skipped and logged, never that an
+import fails.
 
 ### Phase −1 — Before the hardware arrives
 
@@ -1241,6 +1270,16 @@ a temporary tree: album location, destination naming, collisions, awkward
 characters, the atomic-move guard, the JSON log, and the failure paths. The rip
 step is stubbed. That is the half where the bugs live and it does not need a
 drive; the half that does is small and mostly config.
+
+`inbox-import-test.sh` does the same for the consumer, with beets stubbed and a
+local server standing in for both ntfy and Navidrome: the quarantine sweep's
+counts, the import summary and its name cap, the rescan request and its
+Subsonic token, and the MusicBrainz-outage abort — which cannot be reached in a
+live test without taking musicbrainz.org away. It also pins that a broken
+notifier never fails an import that already succeeded. What it cannot cover is
+beets matching anything, the settle loop against a genuinely in-flight copy, a
+real Navidrome accepting `startScan`, and running as `music` at real `/srv`
+paths with setgid inboxes — all of which are Phase 1.
 
 ### Phase 0 — Base
 - Flash Pi OS Lite 64-bit to microSD, boot, update
