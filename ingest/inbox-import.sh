@@ -4,7 +4,7 @@
 # Runs as the `music` user, triggered by inbox.path. Deployed to
 # /usr/local/bin/inbox-import.sh
 #
-# Two things this handles that a bare `beet import` does not:
+# Three things this handles that a bare `beet import` does not:
 #
 #   1. It waits for the inbox to stop changing. Path units fire on the first
 #      change, so a long copy would otherwise be imported half-finished.
@@ -14,6 +14,13 @@
 #   2. It sweeps what beets refused into quarantine. `quiet_fallback: skip`
 #      leaves unmatched albums where they are, so without this they'd sit in
 #      the inbox and be retried forever on every subsequent trigger.
+#
+#   3. It reports the outcome, because it is the only thing that knows it
+#      (§6.4). autorip.sh ejects the disc and pushes only failures, on the
+#      stated understanding that "a successful rip is announced by
+#      inbox-import.sh once the import finishes" — this is that half. Reporting
+#      here rather than in the ripper is also what gets manual drops and
+#      approved fetches the same notification, instead of only rips.
 
 set -euo pipefail
 
@@ -30,7 +37,72 @@ SETTLE_SECONDS="${SETTLE_SECONDS:-120}"
 # Give up waiting eventually rather than blocking the unit forever.
 SETTLE_TIMEOUT="${SETTLE_TIMEOUT:-7200}"
 
+# Notification settings. All optional, all empty by default, and all supplied
+# by /etc/default/lathe via the unit's EnvironmentFile — never from the repo,
+# because the ntfy topic and the Navidrome password are both live credentials.
+#
+# Empty means "skip that step quietly". A server with no topic set still
+# imports; it just says nothing, which is the right failure mode for a
+# notification.
+NTFY_URL="${NTFY_URL:-}"
+NAVIDROME_URL="${NAVIDROME_URL:-}"
+NAVIDROME_USER="${NAVIDROME_USER:-}"
+NAVIDROME_PASS="${NAVIDROME_PASS:-}"
+
+# Names to list in the push before collapsing the rest into a count. A 300-album
+# migration should not arrive as a 300-line notification.
+NOTIFY_MAX_NAMES="${NOTIFY_MAX_NAMES:-10}"
+
 log() { printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$LOG"; }
+
+# A push is a courtesy, never a reason to fail an import that already succeeded:
+# every failure here is logged and swallowed. Note the `|| log` rather than a
+# bare `|| true` — a silent notifier that has been broken for a month is worse
+# than no notifier, because you have stopped watching the journal for it.
+# Keep titles ASCII. The title crosses as an HTTP header, and headers are
+# ISO-8859-1 by spec, so a UTF-8 em dash arrives on the phone as mojibake.
+# Measured against a real request. The body has no such limit, being a body.
+notify() {
+  local title="$1" priority="$2" body="$3"
+  [ -n "$NTFY_URL" ] || return 0
+  curl -fsS --max-time 10 \
+    -H "Title: $title" \
+    -H "Priority: $priority" \
+    -d "$body" "$NTFY_URL" >/dev/null 2>&1 \
+    || log "inbox-import: ntfy push failed (not delivered: $title)"
+}
+
+# Navidrome rescans on a schedule and watches the filesystem, so this only buys
+# latency — seconds instead of up to six hours. It is deliberately not fatal:
+# the album is already in the library either way, and the next scheduled scan
+# will find it.
+#
+# Subsonic token auth, which is what Navidrome speaks: t=md5(password+salt) with
+# the salt sent alongside, so the password itself never goes over the wire. It
+# is still a real password in /etc/default/lathe — hence 0600 there.
+navidrome_rescan() {
+  if [ -z "$NAVIDROME_URL" ] || [ -z "$NAVIDROME_USER" ] || [ -z "$NAVIDROME_PASS" ]; then
+    log "inbox-import: no Navidrome credentials set — leaving the rescan to the schedule"
+    return 0
+  fi
+
+  local salt token
+  salt="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  token="$(printf '%s' "${NAVIDROME_PASS}${salt}" | md5sum | cut -d' ' -f1)"
+
+  if curl -fsS --max-time 15 --get \
+      --data-urlencode "u=$NAVIDROME_USER" \
+      --data-urlencode "t=$token" \
+      --data-urlencode "s=$salt" \
+      --data-urlencode "v=1.16.1" \
+      --data-urlencode "c=lathe" \
+      --data-urlencode "f=json" \
+      "${NAVIDROME_URL%/}/rest/startScan" >/dev/null 2>&1; then
+    log "inbox-import: Navidrome rescan triggered"
+  else
+    log "inbox-import: Navidrome rescan poke failed — new albums will appear on the next scheduled scan"
+  fi
+}
 
 # Nothing to do. The unit can be triggered by a delete as easily as a create.
 if [ -z "$(find "$INBOX" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
@@ -73,8 +145,11 @@ while :; do
   waited=$((waited + 15))
 done
 
-before="$(find "$INBOX" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-log "inbox-import: importing $before directories"
+# Counted with the same predicate as the quarantine sweep below (directories
+# AND loose files), so that `imported = before - moved` is exact rather than
+# approximately right — Bandcamp single-track downloads arrive as a bare .flac.
+before="$(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) | wc -l)"
+log "inbox-import: importing $before items"
 
 # Import twice, one metadata source per pass, MusicBrainz first.
 #
@@ -129,6 +204,9 @@ if grep -qiE 'musicbrainz: Error|Max retries exceeded|Read timed out' "$PASS_OUT
   log "inbox-import: ABORTING before the Bandcamp pass — importing now would"
   log "inbox-import: file MusicBrainz-catalogued releases as Bandcamp ones."
   log "inbox-import: inbox left untouched; re-run when MusicBrainz is back."
+  notify "Import aborted - MusicBrainz unreachable" high \
+    "$before item(s) left in the inbox untouched. Importing now would file
+MusicBrainz-catalogued releases as Bandcamp ones. Re-run when it is back."
   exit 1
 fi
 
@@ -142,8 +220,10 @@ import_pass "Bandcamp" musicbrainz
 # sitting in the inbox to be retried on every trigger forever, which
 # `incremental_skip_later: yes` now guarantees rather than merely risks.
 moved=0
+quarantined=()
 while IFS= read -r -d '' leftover; do
   name="$(basename "$leftover")"
+  quarantined+=("$name")
   dest="$QUARANTINE/$name"
   # Never clobber an existing quarantine entry from an earlier run.
   if [ -e "$dest" ]; then
@@ -151,9 +231,44 @@ while IFS= read -r -d '' leftover; do
   fi
   mv -- "$leftover" "$dest"
   moved=$((moved + 1))
-done < <(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0)
+done < <(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 | sort -z)
 
 # Anything left is an empty directory beets emptied as it moved files out.
 find "$INBOX" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 
 log "inbox-import: done — $moved unmatched moved to quarantine"
+
+# ---------------------------------------------------------------- report (§6.4)
+
+imported=$(( before - moved ))
+[ "$imported" -lt 0 ] && imported=0
+
+# Only worth poking if something actually landed. Everything quarantining is a
+# perfectly ordinary outcome on a first bulk import, and the library did not
+# change.
+if [ "$imported" -gt 0 ]; then
+  navidrome_rescan
+fi
+
+summary="Imported $imported of $before."
+if [ "$moved" -gt 0 ]; then
+  summary="$summary
+$moved to quarantine:"
+  shown=0
+  for name in "${quarantined[@]}"; do
+    if [ "$shown" -ge "$NOTIFY_MAX_NAMES" ]; then
+      summary="$summary
+  ... and $(( moved - shown )) more"
+      break
+    fi
+    summary="$summary
+  $name"
+    shown=$(( shown + 1 ))
+  done
+fi
+
+# Per import RUN, not per album — a stack of CDs ripped back to back collapses
+# into one push, and a 300-album migration into one message rather than 300.
+# That is the better default, but it does mean ntfy is not a reliable "*this*
+# disc is done" signal. The eject is (§6.4).
+notify "Library updated" default "$summary"

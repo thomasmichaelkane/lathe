@@ -10,6 +10,13 @@ Description=Import /srv/inbox into the music library
 Type=oneshot
 User=music
 Group=music
+
+# NTFY_URL and the Navidrome credentials live here rather than in the unit, so
+# that neither the ntfy topic nor a password is committed to the repo. The
+# leading '-' makes the file optional: with nothing set, imports run exactly as
+# before and simply say nothing. Shared with autorip@.service.
+EnvironmentFile=-/etc/default/lathe
+
 ExecStart=/usr/local/bin/inbox-import.sh
 # A 30-album import with ReplayGain and art fetching is slow. Allow hours.
 TimeoutStartSec=21600

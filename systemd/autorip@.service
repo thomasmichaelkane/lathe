@@ -22,7 +22,9 @@ Group=music
 # NTFY_URL lives here rather than in the unit so the topic isn't committed to
 # the repo. The leading '-' means the file is optional: with no topic set,
 # autorip.sh logs failures to the journal and pushes nothing.
-EnvironmentFile=-/etc/default/autorip
+#
+# Shared with inbox-import.service — one topic for the whole system, set once.
+EnvironmentFile=-/etc/default/lathe
 
 ExecStart=/usr/local/bin/autorip.sh %i
 

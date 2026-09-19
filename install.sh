@@ -19,8 +19,9 @@
 #   /srv/music  /srv/inbox  /srv/quarantine  /srv/staging  /srv/logs
 #   /srv/config/beets/library.db  /srv/config/beets/state.pickle
 #   /srv/config/navidrome/
-#   /etc/default/autorip  (created if absent, never overwritten — it holds the
-#                          ntfy topic, which is deliberately not in the repo)
+#   /etc/default/lathe    (created if absent, never overwritten — it holds the
+#                          ntfy topic and the Navidrome password, neither of
+#                          which is in the repo)
 #
 # Code is replaced. Data is not. Albums sitting in quarantine have no bearing
 # on a deploy.
@@ -194,32 +195,52 @@ if install_file "$REPO/systemd/99-autorip.rules" /etc/udev/rules.d/99-autorip.ru
   UDEV_CHANGED=1
 fi
 
-# Holds NTFY_URL, which is a live topic URL and deliberately not in the repo.
-# Created once with the topic unset — autorip.sh treats empty as "don't notify"
-# and logs failures to the journal instead — and never touched again.
+# Shared by autorip@.service and inbox-import.service. Holds a live ntfy topic
+# and a Navidrome password, neither of which belongs in the repo. Created once
+# with everything unset — both scripts treat empty as "skip that step quietly"
+# and log to the journal instead — and never touched again.
 say "notification config:"
-if [ -e /etc/default/autorip ]; then
-  say "  preserved  /etc/default/autorip (never overwritten)"
+if [ -e /etc/default/lathe ]; then
+  say "  preserved  /etc/default/lathe (never overwritten)"
 elif [ "$DRY_RUN" -eq 1 ]; then
-  say "  WOULD CREATE  /etc/default/autorip (empty NTFY_URL)"
+  say "  WOULD CREATE  /etc/default/lathe (all settings unset)"
 else
   mkdir -p /etc/default
   tmp="$(mktemp /etc/default/.lathe-install.XXXXXX)"
   TMPFILES+=("$tmp")
   cat >"$tmp" <<'EOF'
-# Environment for autorip@.service. NOT in the lathe repo — it holds a live
-# ntfy topic URL, which is a capability: anyone with it can push to your phone.
+# Environment for autorip@.service and inbox-import.service.
 #
-# Empty means autorip.sh pushes nothing and logs rip failures to the journal.
-# Set it to a full topic URL to get a push when a rip fails:
+# NOT in the lathe repo, and 0600, because both values below are live
+# credentials. Everything here is optional: unset means the corresponding step
+# is skipped and logged, never that an import or a rip fails.
+
+# An ntfy topic URL is a capability — anyone holding it can push to your phone,
+# so make it long and random. autorip.sh pushes rip FAILURES here;
+# inbox-import.sh pushes the import summary (§6.4).
 #
 #   NTFY_URL=https://ntfy.sh/some-long-random-string
 NTFY_URL=
+
+# Poking Navidrome after an import drops the delay before a new album appears
+# from up to ND_SCANSCHEDULE (6h) to seconds. Without it nothing breaks; the
+# scheduled scan and the filesystem watcher still find everything.
+#
+# A Navidrome login. Subsonic token auth means the password is not sent over
+# the wire, but it is stored here in plain text — which is what the 0600 and
+# root ownership on this file are for.
+#
+#   NAVIDROME_URL=http://localhost:4533
+#   NAVIDROME_USER=tom
+#   NAVIDROME_PASS=
+NAVIDROME_URL=
+NAVIDROME_USER=
+NAVIDROME_PASS=
 EOF
   chmod 0600 "$tmp"
   chown root:root "$tmp"
-  mv -f "$tmp" /etc/default/autorip
-  say "  created    /etc/default/autorip (NTFY_URL unset — edit to enable pushes)"
+  mv -f "$tmp" /etc/default/lathe
+  say "  created    /etc/default/lathe (all unset — edit to enable pushes and rescans)"
 fi
 
 # -------------------------------------------------------------------- reloads

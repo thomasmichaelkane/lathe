@@ -38,8 +38,9 @@ RIP_LOGS="${RIP_LOGS:-/srv/logs/rips}"
 # without a drive attached. Everything after the rip is what needs testing.
 ABCDE_CMD="${ABCDE_CMD:-abcde}"
 
-# Empty means "don't notify". Set NTFY_URL in the unit's environment to a full
-# topic URL, e.g. https://ntfy.sh/some-random-topic
+# Empty means "don't notify". Set NTFY_URL in /etc/default/lathe to a full topic
+# URL, e.g. https://ntfy.sh/some-random-topic — the same file and the same topic
+# inbox-import.sh uses for the success side.
 NTFY_URL="${NTFY_URL:-}"
 
 log() { printf '%s autorip[%s]: %s\n' "$(date -Is)" "$DEV_NAME" "$*"; }
