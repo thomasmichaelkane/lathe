@@ -90,6 +90,13 @@ dupes_have_no_merge_command() {
 
 no_work_dirs() { ! ls -d "$QUARANTINE"/.merge-* >/dev/null 2>&1; }
 
+# A set that is already complete must never be described as a half of one.
+# Reading `disc` off the first file alone reported exactly that, and pointed
+# the reader at a merge with nothing to merge against.
+whole_set_is_not_called_a_merge() {
+  ! q show "The Whole Set" | grep -q 'needs merging'
+}
+
 two_some_box_sets() { [ "$(find "$INBOX" -maxdepth 1 -name 'Some Box Set*' | wc -l)" = 2 ]; }
 three_tracks_on_cd2() { [ "$(find "$INBOX/Grapefruit Regret/CD2" -type f | wc -l)" = 3 ]; }
 
@@ -131,6 +138,24 @@ done
 track "$QUARANTINE/Some Box Set (Disc 1)" "01 a.flac"
 track "$QUARANTINE/Some Box Set (Disc 2)" "01 b.flac"
 
+# 2b. A complete two-disc set flat in ONE folder — the shape a *download*
+#     arrives in, as opposed to the one-disc-at-a-time shape a rip produces.
+#     Every disc is already present, so there is nothing to merge and beets
+#     will collapse the folder into a single import task by itself; the repair
+#     is `retry`. Measured on a 30-track White Album download, 2026-09-20.
+for n in 01 02; do
+  track "$QUARANTINE/The Whole Set" "$n a.flac" \
+    -metadata album="The Whole Set" -metadata albumartist=Nobody \
+    -metadata disc=1 -metadata DISCTOTAL=2 \
+    -metadata track="$n" -metadata TRACKTOTAL=4
+done
+for n in 03 04; do
+  track "$QUARANTINE/The Whole Set" "$n b.flac" \
+    -metadata album="The Whole Set" -metadata albumartist=Nobody \
+    -metadata disc=2 -metadata DISCTOTAL=2 \
+    -metadata track="$n" -metadata TRACKTOTAL=4
+done
+
 # 3. The same disc ripped twice — same album, same track numbers. Must NOT be
 #    offered as a merge.
 for name in "Dupe Album" "Dupe Album.20260101000000"; do
@@ -170,17 +195,26 @@ echo "quarantine-test: interpreter $PY, tree $ROOT"
 echo
 echo "list"
 check      "list exits clean"                        q list
-check_out  "list counts every entry"     "9 entries" q list
+check_out  "list counts every entry"     "10 entries" q list
 check_out  "list sees the loose file"    "loose file" q list
 check_out  "list surfaces read errors"   "read errors" q list
 check      "list --json parses"                      json_parses list
 [ "$RICH" = 1 ] && \
 check_out  "list flags a disc of a set"  "of 2 — needs merging" q list
+[ "$RICH" = 1 ] && \
+check_out  "list knows a complete set in one folder" \
+           "complete 2-disc set in one folder" q list
 
 echo
 echo "show"
 check_out  "show reports the rip log"    "disc id     xYz123" \
            q show "Karenn - Grapefruit Regret"
+if [ "$RICH" = 1 ]; then
+  check_out "show lists every disc present" "disc        1, 2 of 2" \
+            q show "The Whole Set"
+  check     "show never calls a complete set a merge" \
+            whole_set_is_not_called_a_merge
+fi
 check_out  "show rejects an unknown entry" "no such quarantine entry" q show nope
 check      "show exits non-zero on an unknown entry" not_q show nope
 

@@ -119,6 +119,10 @@ class Tags:
     albumartist: str | None = None
     album: str | None = None
     disc: int | None = None
+    # Every disc number present across the entry's files, sorted. A folder
+    # holding a complete set carries more than one, and `disc` on its own
+    # cannot tell that apart from a lone disc of a set — see read_tags.
+    discs: list[int] = field(default_factory=list)
     disctotal: int | None = None
     tracktotal: int | None = None
     year: int | None = None
@@ -162,10 +166,19 @@ def read_tags(audio: list[Path]) -> Tags:
     Track numbers are collected across every file because a gap or an overlap
     between two entries is the tell that they are two discs of one release
     rather than two rips of the same disc.
+
+    Disc numbers are collected the same way, and for the same reason. Taking
+    `disc` from the first file alone was wrong for the shape a download
+    actually arrives in: a complete multi-disc set, flat in one folder, whose
+    later files carry disc 2. The first file says disc 1 and `disctotal` says
+    2, so the entry read as a lone half of a set — pointing the reader at a
+    merge for a set that was already complete. Measured on a 30-track White
+    Album download, 2026-09-20.
     """
     tags = Tags()
     if _MEDIAFILE is None:
         return tags
+    discs: set[int] = set()
     for p in audio:
         try:
             mf = _MEDIAFILE.MediaFile(str(p))
@@ -173,6 +186,8 @@ def read_tags(audio: list[Path]) -> Tags:
             continue
         if mf.track:
             tags.tracks.append(int(mf.track))
+        if mf.disc:
+            discs.add(int(mf.disc))
         for attr in ("albumartist", "album", "disc", "disctotal",
                      "tracktotal", "year", "mb_albumid"):
             if getattr(tags, attr) is None:
@@ -181,6 +196,7 @@ def read_tags(audio: list[Path]) -> Tags:
                 if v not in (None, ""):
                     setattr(tags, attr, v)
     tags.tracks.sort()
+    tags.discs = sorted(discs)
     return tags
 
 
@@ -259,7 +275,18 @@ def _annotate(e: Entry) -> None:
         e.notes.append("loose file — no album folder")
     if _MEDIAFILE is not None and e.audio_files and not t.album:
         e.notes.append("no ALBUM tag")
-    if t.disctotal and t.disctotal > 1:
+    if len(t.discs) > 1:
+        # Every disc is already here, in one folder. There is nothing to merge
+        # — beets collapses a folder like this into a single import task on its
+        # own — so the repair is `retry`, not `merge`.
+        if t.disctotal and set(t.discs) == set(range(1, t.disctotal + 1)):
+            e.notes.append(f"complete {t.disctotal}-disc set in one folder "
+                           "— retry, not merge")
+        else:
+            listed = ", ".join(str(d) for d in t.discs)
+            e.notes.append(f"discs {listed} of {t.disctotal or '?'} "
+                           "in one folder")
+    elif t.disctotal and t.disctotal > 1:
         e.notes.append(f"disc {t.disc or '?'} of {t.disctotal} — needs merging")
     elif strip_disc_marker(e.name)[1] is not None:
         e.notes.append("name carries a disc marker — likely part of a set")
@@ -654,7 +681,8 @@ def _cmd_show(args) -> int:
     t = e.tags
     print(f"albumartist {t.albumartist or '-'}")
     print(f"album       {t.album or '-'}")
-    print(f"disc        {t.disc or '-'} of {t.disctotal or '-'}")
+    shown = ", ".join(str(d) for d in t.discs) if t.discs else (t.disc or "-")
+    print(f"disc        {shown} of {t.disctotal or '-'}")
     print(f"tracks      {t.tracks or '-'} (of {t.tracktotal or '?'})")
     print(f"mb_albumid  {t.mb_albumid or '-'}")
     if e.rip_log:
