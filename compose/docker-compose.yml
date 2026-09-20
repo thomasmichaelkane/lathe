@@ -57,19 +57,19 @@ services:
       - /srv/music:/music:ro
       - /srv/config/navidrome:/data
 
-# libraryd is deliberately absent until Phase 6.
+# librariand is deliberately absent until Phase 6.
 #
-# §5 of the plan lists it here with `build: ./libraryd`, but the only thing in
-# libraryd/ today is quarantine.py — a standalone CLI that needs no container
+# §5 of the plan lists it here with `build: ./librariand`, but the only thing in
+# librariand/ today is quarantine.py — a standalone CLI that needs no container
 # and no server, and is the tool for the Phase 1 quarantine evening. There is
 # no Dockerfile, so leaving the stanza in would mean `docker compose up` fails
 # on a fresh Pi for a service that does nothing yet.
 #
 # Phase 6 adds it back, roughly:
 #
-#   libraryd:
-#     build: ./libraryd
-#     container_name: libraryd
+#   librariand:
+#     build: ./librariand
+#     container_name: librariand
 #     restart: unless-stopped
 #     user: "1001:1001"
 #     ports:

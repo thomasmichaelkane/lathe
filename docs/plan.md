@@ -108,7 +108,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   config/
     navidrome/      # SQLite DB, cache
     beets/          # config.yaml, library.db
-    libraryd/       # custom service config
+    librariand/       # custom service config
   logs/
     rips/           # one log per disc, named by MusicBrainz disc ID
     beets-import.log
@@ -166,9 +166,9 @@ services:
       - /srv/music:/music:ro
       - /srv/config/navidrome:/data
 
-  libraryd:
-    build: ./libraryd
-    container_name: libraryd
+  librariand:
+    build: ./librariand
+    container_name: librariand
     restart: unless-stopped
     user: "1001:1001"
     ports:
@@ -309,7 +309,7 @@ empty-directory cleanup; duplicating that in the rip path means two
 implementations and two beets invocations to keep in step, and *one ingest
 pipeline* stops being true. The price of not duplicating it is that the ripper
 no longer knows whether the album reached the library or quarantine — which is
-what `handoff_path` in the disc log exists to let `libraryd` reconstruct later
+what `handoff_path` in the disc log exists to let `librariand` reconstruct later
 (§10).
 
 ### 6.3 Tag — beets
@@ -440,7 +440,7 @@ zero:
 1. **One release = one folder.** Never nested, never split.
 2. **A folder contains audio tracks and exactly one `cover.jpg`.** Nothing else.
 3. **No embedded artwork.** `embedart` is deliberately absent from the plugin list. The image lives once, on disk, and Navidrome serves it via `getCoverArt`.
-4. **Multi-disc sets become one release per disc** — `Album (Disc 01)`, `Album (Disc 02)`. This preserves rule 1 at the cost of splitting a conceptual release; `libraryd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
+4. **Multi-disc sets become one release per disc** — `Album (Disc 01)`, `Album (Disc 02)`. This preserves rule 1 at the cost of splitting a conceptual release; `librariand` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
 5. **Singles are one-track releases**, foldered like everything else.
 
 The `multidisc` field comes from the `inline` plugin. **Verified on beets 2.13.1 (2026-08-21)** against a real single-disc import, rendering `$album%if{$multidisc, (Disc $disc)}`:
@@ -562,7 +562,7 @@ The URL itself is preserved, in `BANDCAMP_ALBUM_URL` / `BANDCAMP_TRACK_URL`, by
 `ingest/beets/plugins/bandcamp_url.py`. In the *file*, not just in `library.db`:
 `/srv/music` is the master and the database is derived, so a rebuild from files
 alone must not lose the only route back to a release MusicBrainz cannot
-describe. That route is what `libraryd`'s quarantine-resolve needs, since
+describe. That route is what `librariand`'s quarantine-resolve needs, since
 `album_for_id(<bandcamp url>)` re-fetches the release. Verified 2026-08-21:
 beets reads both fields back off a FLAC with `mb_albumid` empty.
 
@@ -602,7 +602,7 @@ half-releases, and see below for why those can never import.
 >
 > **Why the cheap answer wins here.** Everything below only pays off if box
 > sets are common; a set that never gets its remaining discs still needs the
-> ageing-out sweeper, `libraryd` still has to show pending sets, and the
+> ageing-out sweeper, `librariand` still has to show pending sets, and the
 > notification becomes stateful — that is three moving parts, all of which fail
 > *silently* by leaving music in staging. Quarantine already fails loudly, is
 > already swept, already reviewed, and is where a half-ripped set would end up
@@ -662,7 +662,7 @@ Consequences to design for:
   must not sit in staging forever. Age it out into `/srv/quarantine/` with the
   discs it does have, so it surfaces for review rather than being silently
   half-ripped.
-- **`libraryd` needs to show pending sets** — which releases are waiting on
+- **`librariand` needs to show pending sets** — which releases are waiting on
   which discs — otherwise the only way to know is to `ls` the staging tree.
 - **A re-rip of a disc already present** should replace it, not collide.
 
@@ -800,7 +800,7 @@ formats, embedded art, junk files, tags from whatever ripped them years ago.
 With `strong_rec_thresh: 0.04` expect a substantial quarantine pile on the
 first bulk import. That's the config working, not failing.
 
-### 6.5a Working through quarantine — `libraryd/quarantine.py`
+### 6.5a Working through quarantine — `librariand/quarantine.py`
 
 Quarantine is where every failure lands: a bad match, a half-tagged download, a
 disc of a set that can never match alone (§6.3a). Nothing decides what happens
@@ -895,7 +895,7 @@ command offered. **Same album, no disc *or* track numbers** is undecidable, and
 says so, because the alternative is a confident-sounding wrong answer about
 files it cannot read.
 
-**It is a library as much as a CLI.** `libraryd`'s `/quarantine` endpoints
+**It is a library as much as a CLI.** `librariand`'s `/quarantine` endpoints
 (§10) import `entries()`, `groups()`, `merge()`, `retry()` and `drop()` rather
 than shelling out, and `--json` on the read commands is there so the dashboard
 and the CLI cannot drift. `mediafile` is imported lazily: without it every
@@ -913,7 +913,7 @@ separate fields.
 
 ### 6.6 Library hygiene
 
-The rules in §6.3 are only real if something checks them. `lint.py` runs nightly via systemd timer and on demand via `libraryd`.
+The rules in §6.3 are only real if something checks them. `lint.py` runs nightly via systemd timer and on demand via `librariand`.
 
 **Structural checks** — walk every release folder and flag:
 
@@ -939,7 +939,7 @@ The rules in §6.3 are only real if something checks them. `lint.py` runs nightl
 
 **Fixable vs. reportable.** Split the output. Deletable junk (`.DS_Store`, empty folders, stray logs) gets a `--fix` flag. Anything involving metadata or artwork is reported only — never let an automated tool rewrite tags unattended.
 
-Output as JSON to `/srv/logs/lint.json`, served by `libraryd` at `GET /library/violations` and rendered in the dashboard.
+Output as JSON to `/srv/logs/lint.json`, served by `librariand` at `GET /library/violations` and rendered in the dashboard.
 
 Related: run `beet fetchart --quiet` periodically to backfill art, and `beet missing` to surface incomplete releases from failed rips.
 
@@ -1043,11 +1043,11 @@ Stack, screens, API surface, visual direction and build phases live in
 
 ---
 
-## 10. Custom service (`libraryd`)
+## 10. Custom service (`librariand`)
 
 FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 
-*(Named `libraryd`, not `ripd` — it covers lint, library operations and stats as well as rips. See §14.)*
+*(Named `librariand` — it tends the library rather than serving it, and it covers lint, rips and stats as well as quarantine. See §14 for the two names it had before this one.)*
 
 | Method | Path | Does |
 |---|---|---|
@@ -1075,14 +1075,14 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 
 **On `/rips`:** rip history comes from `/srv/logs/rips/`, which records the rip
 and nothing after it — the ripper hands off before the import happens (§6.2), so
-it cannot know the outcome. Each disc log carries `handoff_path`; `libraryd`
+it cannot know the outcome. Each disc log carries `handoff_path`; `librariand`
 resolves final status by checking whether that name is still sitting in
 `/srv/quarantine/`.
 
 Ship a minimal web dashboard on the same service — this is the actual UI for quarantine review and lint violations, and it works from any browser, so it doesn't need to live in the Android app.
 
 **On the quarantine endpoints:** they are a thin HTTP layer over
-`libraryd/quarantine.py` (§6.5a), which is a working CLI in its own right and
+`librariand/quarantine.py` (§6.5a), which is a working CLI in its own right and
 does not wait for Phase 6. Import its functions; do not shell out to it, and do
 not reimplement the merge — the atomic-rename and rollback behaviour is the
 part that must not exist twice.
@@ -1185,7 +1185,7 @@ Almost everything here is unblocked. Only the rip pipeline genuinely needs the P
 
 **a) Set up a laptop mirror of the server — do this first, it unblocks everything else**
 
-Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes of work, and it becomes the development target for the app, `lint.py`, and `libraryd`. Because the app is built against the OpenSubsonic spec rather than Navidrome specifics, developing against a laptop instance is functionally identical to developing against the Pi.
+Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes of work, and it becomes the development target for the app, `lint.py`, and `librariand`. Because the app is built against the OpenSubsonic spec rather than Navidrome specifics, developing against a laptop instance is functionally identical to developing against the Pi.
 
 **b) Tune beets — highest value of the real work**
 
@@ -1269,7 +1269,7 @@ pagination and scroll assumptions realistic rather than flattering, and it gives
 
 Pure Python over a directory tree, no server dependency. Run it against the current messy library — it will immediately tell you how much cleanup Phase 1 involves.
 
-**e) Scaffold `libraryd` against fake data**
+**e) Scaffold `librariand` against fake data**
 
 The dashboard, quarantine review, and violations view all work off JSON. Only `/eject` and live rip progress need real hardware.
 
@@ -1317,7 +1317,7 @@ paths with setgid inboxes — all of which are Phase 1.
 
 ### Phase 1 — Serving music
 - `docker compose up` with Navidrome
-- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it — `libraryd/quarantine.py` (§6.5a) is the tool for that evening, and it needs neither `libraryd` nor the optical drive.
+- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it — `librariand/quarantine.py` (§6.5a) is the tool for that evening, and it needs neither `librariand` nor the optical drive.
 - Create account, configure transcoding, connect ListenBrainz, then turn `ND_ENABLETRANSCODINGCONFIG` back off
 - **Done when:** music plays in a desktop browser and in a stock Subsonic client on your phone over Tailscale
 
@@ -1350,13 +1350,13 @@ nothing in it blocks this repo — it needs only a reachable OpenSubsonic endpoi
 which Phase 1 already provides.
 - **Done when:** it's the app you reach for instead of the stock client
 
-### Phase 6 — libraryd
+### Phase 6 — librariand
 - FastAPI service, endpoints above
 - Web dashboard: quarantine review, lint violations, rip history
 - **Done when:** you can resolve a bad match from your phone
 
 ### Phase 7 — v2 features
-- `/releases/merge` in `libraryd` (§10), if merging box sets by hand gets tiring
+- `/releases/merge` in `librariand` (§10), if merging box sets by hand gets tiring
 - Whatever you actually miss by then
 - App-side v2 — offline downloads, Android Auto — is tracked in `deadwax`
 
@@ -1402,12 +1402,12 @@ Worth being precise about this, because it prevents over-splitting:
 | Ripper | Event-triggered batch job (udev → systemd → script). A producer: it writes files and a log, and nothing else |
 | Ingest pipeline | Path-triggered batch job (`inbox.path` → `inbox-import.sh`). The only thing that runs beets |
 | Linter | Scheduled batch job |
-| `libraryd` API | The only long-running HTTP service in this repo |
-| Dashboard | A frontend served by `libraryd` |
+| `librariand` API | The only long-running HTTP service in this repo |
+| Dashboard | A frontend served by `librariand` |
 | Deadwax | An Android client |
 | Navidrome | Third-party — you write config, not code |
 
-The first four **do not talk over HTTP**. They integrate through the filesystem contract in `/srv`: the ripper writes FLACs into `/srv/inbox/` and a JSON log per disc, the ingest pipeline consumes whatever appears in the inbox, the linter writes `lint.json`, and `libraryd` reads all of it. They share a machine, a language, a user account, and a directory layout.
+The first four **do not talk over HTTP**. They integrate through the filesystem contract in `/srv`: the ripper writes FLACs into `/srv/inbox/` and a JSON log per disc, the ingest pipeline consumes whatever appears in the inbox, the linter writes `lint.json`, and `librariand` reads all of it. They share a machine, a language, a user account, and a directory layout.
 
 Splitting them into separate repos would make every change to that contract a coordinated multi-repo commit, in exchange for nothing.
 
@@ -1444,7 +1444,7 @@ lathe/
   compose/          docker-compose.yml, Navidrome env
   ingest/           autorip.sh, abcde.conf, beets config
   lint/             lint.py
-  libraryd/         FastAPI service
+  librariand/        FastAPI service
     quarantine.py   quarantine review + multi-disc merge — CLI and library
     dashboard/      web UI for quarantine + violations
   systemd/          units, timers, udev rules
@@ -1479,8 +1479,25 @@ A monorepo is also defensible for a solo project and gives you atomic cross-cutt
 
 ### Naming conventions
 
-**Server side: boring and functional.** `autorip`, `lint`, `libraryd`. You will be SSH'd in at 11pm reading `systemctl status autorip` — the name should tell you what broke, not require recalling which metaphor maps to which job. Thematic names for infrastructure are a tax paid forever for a joke enjoyed once.
+**Server side: boring and functional.** `autorip`, `lint`, `librariand`. You will be SSH'd in at 11pm reading `systemctl status autorip` — the name should tell you what broke, not require recalling which metaphor maps to which job. Thematic names for infrastructure are a tax paid forever for a joke enjoyed once.
 
-*(§10 originally called the API service `ripd`. Since it covers lint, library operations and stats as well as rips, **`libraryd` is the name — settled**, and used consistently throughout this document, in `docker-compose.yml`, and as the directory in the repo.)*
+*(This service has had three names, and the reasons are worth keeping because
+each rejection sharpened the next one.*
+
+*`ripd` was first, and was wrong for being too narrow: the service covers lint,
+library operations and stats as well as rips, so a name built on one of its
+jobs would have gone stale the moment it grew.*
+
+*`libraryd` replaced it and was right about scope but wrong about the noun.
+Navidrome is the thing that serves the library; this one does operations around
+it — quarantine review, lint, rip history, eject. The two sit side by side in
+`docker ps`, and `library` was already doing duty for `/srv/music` (§4) and for
+beets' `library.db`, so the word was carrying three jobs at once.*
+
+***`librariand` is the name — settled 2026-09-20.** A librarian tends a library
+rather than being one, which is exactly the distinction the previous name lost.
+It is still boring and functional, which is the rule above; it is just precise
+about which boring thing it does. Used consistently throughout this document,
+in `docker-compose.yml`, and as the directory in the repo.)*
 
 **App side: Deadwax.** Public-facing, and the name that has to do work. It locks in the Android package ID (permanent once published), the store listing names, and the Subsonic `c=` client identifier — which is the only one of the three that shows up on this side, in Navidrome's logs. The collision check and the runners-up are recorded in the `deadwax` repo.

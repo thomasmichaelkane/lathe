@@ -14,7 +14,7 @@ it to BANDCAMP_ALBUM_URL / BANDCAMP_TRACK_URL instead.
 Why put it in the file at all, when beets keeps it in library.db? Because
 /srv/music is the master and library.db is derived. Without this, rebuilding
 the library from the files alone would permanently lose the link back to the
-Bandcamp release — which is what libraryd's quarantine-resolve flow needs, and
+Bandcamp release — which is what librariand's quarantine-resolve flow needs, and
 the only way to re-fetch metadata for a release MusicBrainz does not have.
 
 Reads from `item` rather than from `tags`, so it does not care whether `zero`
