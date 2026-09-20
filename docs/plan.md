@@ -43,7 +43,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Desktop client | **Navidrome's built-in web UI** | Free. Build nothing. |
 | Custom API | **FastAPI**, Python | Same language as the rip scripts; small surface |
 | Scrobbling | **ListenBrainz, server-side only** | Navidrome scrobbles natively off the `stream` requests clients already make. No client implements it — §9 |
-| Album art | **One `cover.jpg` per folder, never embedded** | One source of truth; no image duplicated inside every FLAC |
+| Album art | **One `cover.jpg` per album, authoritative**; embedded art is a tolerated fallback, never the source of truth | Navidrome's default priority is `cover.*, folder.*, front.*, embedded, external`, so the file on disk always wins. Stripping the embedded copy would rewrite every archive master to reclaim 0.18% — measured, §6.3 |
 | Multi-disc releases | **One folder per disc** on disk; discs that arrive separately **quarantine and are merged by hand** — §6.3a, §6.5a | Preserves the one-folder rule, and clients still present it as *one album with disc sections* — measured, §6.5a. Letting them quarantine costs a minute per box set and needs no stateful ripper |
 | Singles | **Treated as one-track releases** | Rare enough not to warrant a special case |
 | Repos | **Two now** (server, app), a third later (client library) | Different languages, toolchains, and publication futures — see §14 |
@@ -419,9 +419,9 @@ zero:
 ### The library rules these paths enforce
 
 1. **One release = one folder.** Never nested, never split.
-2. **A folder contains audio tracks and exactly one `cover.jpg`.** Nothing else.
-3. **No embedded artwork.** `embedart` is deliberately absent from the plugin list. The image lives once, on disk, and Navidrome serves it via `getCoverArt`.
-4. **Multi-disc sets become one release per disc** — `Album (Disc 01)`, `Album (Disc 02)`. This preserves rule 1 at the cost of splitting a conceptual release; `libraryd` gets a merge endpoint later (§10) to stitch them back together at the presentation layer.
+2. **A folder contains audio tracks and exactly one `cover.jpg`.** Nothing else — with one measured exception for multi-disc sets, below.
+3. **`cover.jpg` is authoritative. Embedded art is a tolerated fallback**, never the source of truth. Navidrome serves the disk file via `getCoverArt`.
+4. **Multi-disc sets become one folder per disc** — `Album (Disc 01)`, `Album (Disc 02)`. This preserves rule 1 at the cost of splitting a conceptual release on disk. It does *not* split it at the presentation layer: a tag-consistent set has always been one album to a client, measured on Navidrome 0.63.2 — see §6.5a, which also retargets the §10 merge endpoints at the case that can genuinely split an album.
 5. **Singles are one-track releases**, foldered like everything else.
 
 The `multidisc` field comes from the `inline` plugin. **Verified on beets 2.13.1 (2026-08-21)** against a real single-disc import, rendering `$album%if{$multidisc, (Disc $disc)}`:
@@ -436,6 +436,61 @@ Both branches behave, the leading space after the comma is preserved (it's what 
 **`$disc` is zero-padded to two digits on 2.x** — a second disc folders as `Album (Disc 02)`, not `Album (Disc 2)`. Padding sorts correctly, so it is kept; note it here because it differs from what this plan specified under 1.6.
 
 Test the branches by flipping the *condition* (`> 1` vs `>= 1`), not by substituting a bare literal. `item_fields` values are Python expression bodies, and the `inline` plugin fails to load on a bare `1` or `0` — a substitution test looks like it ran and proves nothing.
+
+**Proven end to end on a real multi-disc release, 2026-09-20.** Everything above was verified by flipping the condition on a *single*-disc import; this is the first time the true branch ran against an actual two-disc album. A 30-track White Album download (2018 remix, flat in one folder, disc tags already correct) filed as:
+
+| On disk | Tracks | Tags |
+|---|---|---|
+| `The Beatles/The Beatles (Disc 01)/` | 17 | `disc 1`, `disctotal 2` |
+| `The Beatles/The Beatles (Disc 02)/` | 13 | `disc 2`, `disctotal 2` |
+
+One beets album (`disctotal=2`, 30 items), two folders, correct split. The `multidisc` risk flagged since the first draft of this plan is retired.
+
+**Only the first disc folder gets a `cover.jpg`**, and that is `fetchart` behaving correctly rather than a bug: it writes one image per *album*, a multi-disc set is one album, and the album's single `artpath` points into the Disc 01 folder. This is the measured exception to rule 2, and the one thing that must be written down about it is for `lint.py` (§6.6): **enforce artwork per album, not per folder**, or every box set reports a false violation for its second disc onwards.
+
+### Embedded artwork survives import — and that is now the policy
+
+The earlier draft of rule 3 said embedded art could not occur because `embedart`
+is absent from the plugin list. **That was wrong about the mechanism.** Omitting
+`embedart` only stops beets *adding* art; it removes nothing that arrives
+embedded, and `scrub` actively preserves what is there — it reads the existing
+art before stripping tags and writes it back afterwards:
+
+```python
+# beetsplug/scrub.py — _scrub_item
+art = mf.art          # read before
+self._scrub(item.path)
+item.try_write()
+if art:
+    mf.art = art      # ...and restored after
+    mf.save()
+```
+
+Measured 2026-09-20 across the whole test library — 51 FLACs, 1.97 GB:
+
+| Measure | Value |
+|---|---|
+| Embedded art | 3.5 MB, **0.18% of library size** |
+| `cover.jpg` files | 7.6 MB across 3 albums — *more than double* all embedded art |
+| Embedded resolution | 500×500 – 700×700 |
+| `cover.jpg` resolution | 1000×1000 – 3000×3000 |
+
+So the embedded copy is not a duplicate, it is a *lower-resolution* duplicate,
+and the "no image duplicated inside every FLAC" worry in §2 costs 0.18%.
+
+**Kept deliberately, as a fallback.** Navidrome's default `CoverArtPriority`,
+read out of the 0.63.2 binary, is `cover.*, folder.*, front.*, embedded,
+external` — external files win, and `embedded` sits in the chain behind them.
+The behaviour the rule wanted is already the default, so there is nothing to
+build. The alternative was `embedart` with `auto: no` purely to reach `beet
+clearart`, plus a step in `inbox-import.sh`, plus an extra rewrite pass over
+archive masters, to delete something with genuine fallback value: it is the only
+art that travels with an individual file when one is copied out of the library.
+
+The cost of keeping it: a fallback can go stale. Replace a `cover.jpg` with a
+better scan and the embedded copy still holds the old image. Acceptable for a
+fallback by definition — noted so it is not discovered as a surprise. `lint.py`
+must therefore **not** flag embedded art as a violation.
 
 ### Two metadata sources, imported in two passes
 
@@ -510,6 +565,46 @@ existed.
 
 **`autorip.sh` must use the same two passes**, for the same reasons. A CD rip
 has no `data_source` tag either.
+
+### Cosmetic tag noise quarantines correct matches — measured
+
+A second way to fall short of `strong_rec_thresh`, unrelated to `data_source`
+and not fixed by the cascade. **Measured 2026-09-20** on the 30-track White
+Album download.
+
+beets found the right release. The mapping was structurally perfect —
+`mediums=2`, `tracks=30`, `extra_items=0`, `extra_tracks=0`, every track
+aligned, nothing missing or spare. It scored **0.0646** against
+`strong_rec_thresh: 0.04`, came back as `Recommendation.medium`, and
+`quiet_fallback: skip` quarantined it.
+
+| Penalty | Value | Cause |
+|---|---|---|
+| `tracks` | +0.0425 | every title carries a ` (2018 Mix)` suffix the MB tracklist does not |
+| `album` | +0.0076 | `The Beatles (2018 Remastered)` vs `The Beatles` |
+| `country` | +0.0072 | tags say `XW`, candidate is `GB` |
+| `label` | +0.0072 | tags say `UMC` |
+
+Every one of them is cosmetic, and the per-track suffix alone exceeds the whole
+threshold. Zeroing the `country` and `label` weights — defensible, since
+neither is part of release identity — only reaches 0.0502, so tuning the trivia
+does not rescue this class of release.
+
+**Do not raise `strong_rec_thresh` in response.** The top candidate here is a
+**1994 GB reissue**, and none of the top five candidates is the 2018 remix the
+files actually are. Loosening the threshold to swallow 0.0646 would file a 2018
+remix under a 1994 release with the wrong date and the wrong release MBID —
+precisely the "wrong data leaving the house" failure the MBID rules below exist
+to prevent. The skip is correct. What it means is that **quarantine is the
+normal path for downloads with embellished tags, not an exceptional one**, and
+§6.5a has to be good enough to work through routinely.
+
+**`--search-id` does not override the threshold.** Forcing the release by MBID
+restricts *which* candidates are considered; acceptance is still purely
+distance-based (`beets/autotag/match.py`, `_recommendation`), so under `quiet:
+yes` it skips exactly the same way. There is no "just use this release" escape
+hatch in the non-interactive path — worth knowing before reaching for one
+during a repair.
 
 ### MusicBrainz ID fields on Bandcamp releases — settled
 
@@ -870,11 +965,35 @@ lookup is one request per disc ID, rate-limited to MusicBrainz's one per
 second, cached in `/srv/logs/rips/.discid-cache.json`, and every command works
 without it.
 
+**Note what this cannot tell you about a download.** The lookup is keyed on the
+disc ID from a rip log, so a downloaded album — which has no disc ID — gets a
+blank `musicbrainz` line even with `--online`. `show` therefore says nothing
+about *why* beets refused it, which for a download is the question that matters;
+see §13.
+
 Two cases it refuses rather than guesses. **Same album, overlapping track
 numbers** is two rips of the same disc, not a set — reported, but with no merge
 command offered. **Same album, no disc *or* track numbers** is undecidable, and
 says so, because the alternative is a confident-sounding wrong answer about
 files it cannot read.
+
+**A third case, and the one a download actually arrives in: the complete set,
+flat in one folder.** A rip produces a set one disc at a time, so the tool was
+written assuming one entry is one disc — it read `disc` from the first file it
+found. A downloaded box set is the opposite shape: every disc in a single
+folder, with the later files carrying disc 2. The first file says disc 1,
+`disctotal` says 2, and the entry reported as `disc 1 of 2 — needs merging`
+while listing tracks 1–30 of 30 two lines below it. Contradictory on its face,
+and it pointed at a repair for a set that was already whole — `groups` then
+correctly found no partner to merge with, leaving the reader at a dead end.
+
+Fixed 2026-09-20: `read_tags` collects the *set* of disc numbers across every
+file, the same way it already collected track numbers and for the same reason.
+An entry holding more than one disc is reported as a complete set and sent to
+`retry`, not `merge` — beets collapses a folder like that into one import task
+by itself (see the table in §6.3), so there is nothing to restack. Found by
+importing a real 30-track White Album download; regression tests cover both the
+note and the `show` output.
 
 **It is a library as much as a CLI.** `libraryd`'s `/quarantine` endpoints
 (§10) import `entries()`, `groups()`, `merge()`, `retry()` and `drop()` rather
@@ -883,9 +1002,10 @@ and the CLI cannot drift. `mediafile` is imported lazily: without it every
 command still works and only the tag-derived columns go blank, which matters on
 a machine where beets lives in its own virtualenv.
 
-`quarantine-test.sh` fabricates a quarantine tree with ffmpeg — a real
-two-disc set, an untagged one, a duplicate pair, a loose `.flac`, a rip log —
-and runs the real script against it. **Write `DISCTOTAL` and `TRACKTOTAL` as
+`quarantine-test.sh` fabricates a quarantine tree with ffmpeg — a two-disc set
+ripped one disc at a time, a complete two-disc set flat in one folder, an
+untagged set, a duplicate pair, an undecidable pair, a loose `.flac`, a rip log
+— and runs the real script against it. **Write `DISCTOTAL` and `TRACKTOTAL` as
 their own Vorbis comments** when fabricating test files: `-metadata disc=1/2`
 reaches the file as `DISCNUMBER=1/2`, and mediafile does not split the slash
 form on Vorbis the way it does on ID3, so the slash form silently loses
@@ -901,11 +1021,14 @@ The rules in §6.3 are only real if something checks them. `lint.py` runs nightl
 | Violation | Example |
 |---|---|
 | Stray non-audio files | `.cue`, `.log`, `.m3u`, `.nfo`, `.txt`, `Thumbs.db`, `.DS_Store` |
-| Wrong artwork name or count | `folder.jpg`, `front.png`, `back.jpg`, booklet scans, zero images, two images |
-| Embedded artwork present | Should have been stripped — indicates a bad import path |
+| Wrong artwork name or count | `folder.jpg`, `front.png`, `back.jpg`, booklet scans, zero images, two images — **counted per album, not per folder** (§6.3): `fetchart` writes one image per album, so the second and later disc folders of a set legitimately have none, and a per-folder rule reports a false violation for every box set |
 | Nested subfolders | Violates one-release-one-folder |
 | Naming drift | Filename doesn't match the beets path template |
 | Empty folders | Left behind by moves |
+
+**Not a violation: embedded artwork.** It is a sanctioned fallback (§6.3), it is
+present on essentially every download, and Navidrome prefers the disk file over
+it. Flagging it would fill the report with noise nobody intends to act on.
 
 **Metadata checks:**
 
@@ -1177,11 +1300,13 @@ Verified on **2.13.1** (2026-08-21): all seven plugins load, MusicBrainz matchin
 
 The rest is the fiddliest config in the plan and the one most likely to bite. Point beets at a **copy** of existing music (never the original — `import.move: yes` physically relocates and renames every file it touches, so a bad template rearranges your actual collection), and iterate until:
 
-- Path templates produce exactly the folder structure in §6.3
-- The `inline` plugin's `multidisc` expression actually evaluates — verify before trusting it
-- `quiet_fallback: skip` leaves unmatched albums where you expect
-- `fetchart` writes a single `cover.jpg` and nothing is embedded
-- ReplayGain via ffmpeg completes without errors
+- ~~Path templates produce exactly the folder structure in §6.3~~ — **done**, single-disc and compilation
+- ~~The `inline` plugin's `multidisc` expression actually evaluates~~ — **done**, and since 2026-09-20 proven against a real two-disc album, not just a flipped condition (§6.3)
+- ~~`quiet_fallback: skip` leaves unmatched albums where you expect~~ — **done**, and exercised more often than expected (§6.3, cosmetic tag noise)
+- ~~`fetchart` writes a single `cover.jpg` and nothing is embedded~~ — **half done**: `cover.jpg` yes, one per *album*; embedded art survives and is now policy rather than a defect (§6.3)
+- ~~ReplayGain via ffmpeg completes without errors~~ — **done**, album and track gain on every import
+
+**Status 2026-09-20.** A full `reset-testdata.sh && import-testdata.sh` run is clean end to end: the two-pass cascade, the `comp` template, MBID stripping, ReplayGain, the loose-file quarantine sweep and the `multidisc` template are all confirmed against real files. `autorip-test.sh` 34/34 and `quarantine-test.sh` 45/45 offline.
 
 Discovering a broken template now costs an afternoon. Discovering it after 200 CDs costs a re-file of the entire library.
 
@@ -1215,17 +1340,34 @@ commands — `ls`, `config`, a one-off `import` while tuning a template.
 
 **What to put in `originals/`** — 8–12 albums chosen for coverage, not volume:
 
-| Case | Tests |
-|---|---|
-| Normal single-disc album, well known | The happy path |
-| **A multi-disc release** | The `multidisc` expression — the #1 flagged risk |
-| Various-artists compilation | The separate `comp` path template |
-| An EP or single | `albumtype`, via the `default` path — a single is a one-track *release*, not a beets singleton |
-| A Bandcamp single-track download | The worst real case: Bandcamp gives these **no `ALBUM` tag at all**, with everything crammed into `TITLE`. Nothing can match them automatically — they are the quarantine path |
+| Case | Tests | Status |
+|---|---|---|
+| Normal single-disc album, well known | The happy path | **covered** — *Grapefruit Regret*, matches MusicBrainz |
+| **A multi-disc release** | The `multidisc` expression — the #1 flagged risk | **covered** — a 30-track White Album download; template proven (§6.3) |
+| Various-artists compilation | The separate `comp` path template | **covered** — *SHUBZINVA001*, falls through to the Bandcamp pass |
+| An EP or single that *matches* | `albumtype`, via the `default` path — a single is a one-track *release*, not a beets singleton | **still missing.** The only single in the set is one designed to fail |
+| A Bandcamp single-track download | The worst real case: Bandcamp gives these **no `ALBUM` tag at all**, with everything crammed into `TITLE`. Nothing can match them automatically — they are the quarantine path | **covered** — quarantines as intended |
 
 Mostly FLAC, since that's the archive format and ReplayGain-via-ffmpeg needs testing on it. NIN's *Ghosts I–IV* (free, FLAC, CC, well-catalogued in MusicBrainz, genuinely multi-disc) and *The Slip* cover the first two cheaply.
 
-Broken cases are **synthesised, not sourced** — strip tags off a copy to exercise `quiet_fallback: skip`, embed art in another to confirm `scrub` removes it, scatter `.cue`/`.nfo`/`Thumbs.db` to give `lint.py` something to find. Synthetic is better: you control exactly what's wrong.
+**A download is not the same shape as a rip, and both need covering.** The
+multi-disc case arrived as 30 files flat in one folder with correct disc tags —
+not as `CD1/`, `CD2/`, and not as two separately-ripped discs. That single
+difference in shape found two defects (§6.5a, and the cosmetic-tag-noise result
+in §6.3) that the rip-shaped fixtures in `quarantine-test.sh` could not have.
+Keep at least one of each shape.
+
+Broken cases are **synthesised, not sourced** — strip tags off a copy to exercise `quiet_fallback: skip`, scatter `.cue`/`.nfo`/`Thumbs.db` to give `lint.py` something to find. Synthetic is better: you control exactly what's wrong. **Still missing**, along with the matching EP above.
+
+**One untested interaction, worth doing next.** Real downloads ship junk beside
+the audio — the White Album folder carried `.m3u`, `Front.jpg`, `Jolly
+Roger.png`, `spek.png` and `DR10.txt`. beets' `clutter` setting only covers
+`Thumbs.DB` and `.DS_Store`, so everything else is left behind in the inbox
+folder after a successful import — and `inbox-import.sh` sweeps *any* remaining
+directory into quarantine. That reads as though the album failed when it
+imported perfectly. Not yet observed, because the album under test quarantined
+before reaching that branch; reproduce it with an album that matches cleanly and
+has junk beside it.
 
 **c) Deadwax is unblocked, and tracked in its own repo**
 
@@ -1362,6 +1504,18 @@ which Phase 1 already provides.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
 - **A VPN on this box, if you ever run one.** Only relevant if you add a torrent client here. Keep any VPN scoped to that client's own container — a full-tunnel VPN on the Pi fights Tailscale for the default route, so a tripped killswitch would cost you access to your own library. `farfetchd`'s repo covers the how; the only thing `lathe` cares about is that Tailscale keeps the default route.
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
+- **How to accept a correct match that scored just short.** The measured case in
+  §6.3 — a structurally perfect 30-track match at 0.0646 against a 0.04
+  threshold — has no repair today. `quarantine.py retry` hands the album back
+  unchanged, so it scores the same and quarantines again: a loop, not a fix.
+  `--search-id` does not help, because acceptance is distance-based regardless.
+  The three candidate answers, none of them yet chosen: teach `show` to print
+  the candidate list with distances and penalties so the call can be made by
+  eye, then either (a) add an accept-this-candidate command that imports with
+  the ID *and* a per-run threshold override, (b) let the repair be an
+  interactive `beet import -t` outside the pipeline, or (c) edit the offending
+  tags — strip a ` (2018 Mix)` suffix — and retry. (a) fits the "you decide,
+  never guess" philosophy best and is the most work.
 
 ---
 
