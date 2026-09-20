@@ -8,13 +8,24 @@
 #   sudo ./install.sh              deploy
 #   sudo ./install.sh --dry-run    show what would change, touch nothing
 #   sudo ./install.sh --force      deploy even while an ingest unit is running
+#   sudo ./install.sh --uninstall  remove everything this script deployed
+#
+# --uninstall takes --dry-run too, and reading that first is the habit. It
+# removes only files this script put there, disables the triggers it enabled,
+# and deliberately leaves /srv and /etc/default/lathe alone: the library, the
+# beets database, and your ntfy and Navidrome credentials all outlive it.
 #
 # Why this exists at all: copying these by hand is fine exactly once, and a
 # trap every time after. A hotfix applied straight to /etc/abcde.conf works,
 # which is the problem — the repo silently stops describing the running system
 # and the next deploy reverts the fix without saying anything (§12).
 #
-# What this script never touches:
+# It creates the §4 directory tree under /srv and sets its ownership and
+# setgid bits, because the scripts it deploys cannot run without those
+# directories — installing autorip.sh without /srv/staging/rips is half a
+# deploy. It creates them; it never writes anything into them.
+#
+# What this script never touches the CONTENTS of:
 #
 #   /srv/music  /srv/inbox  /srv/quarantine  /srv/staging  /srv/logs
 #   /srv/config/beets/library.db  /srv/config/beets/state.pickle
@@ -32,17 +43,20 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
 FORCE=0
+UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     -n|--dry-run) DRY_RUN=1 ;;
     -f|--force)   FORCE=1 ;;
+    -u|--uninstall) UNINSTALL=1 ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
 MUSIC_USER="${MUSIC_USER:-music}"
-BEETS_DIR="${BEETS_DIR:-/srv/config/beets}"
+SRV="${SRV:-/srv}"
+BEETS_DIR="${BEETS_DIR:-$SRV/config/beets}"
 
 CHANGED=()
 CHANGED_UNITS=()
@@ -73,19 +87,46 @@ die()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 [ "$DRY_RUN" -eq 1 ] || [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo ./install.sh)"
 
+# An uninstall needs none of what follows: no music user (it may already be
+# gone), no mounted /srv (paths simply report absent), and no pluginpath
+# agreement (nothing is being installed). Requiring them would mean a broken
+# system could not be cleaned up, which is backwards.
+if [ "$UNINSTALL" -eq 0 ]; then
+
 id -u "$MUSIC_USER" >/dev/null 2>&1 \
   || die "user '$MUSIC_USER' does not exist — run Phase 0 first (§11)"
 
-[ -d /srv ] || die "/srv does not exist — run Phase 0 first (§11)"
+[ -d "$SRV" ] || die "$SRV does not exist — run Phase 0 first (§11)"
+
+# `-d` is not enough, and the difference is the whole ballgame. /srv exists on
+# stock Debian whether or not the library drive is mounted on it, and `nofail`
+# in fstab (§4) makes "booted fine, drive absent" an ordinary state rather than
+# an obvious emergency. Deploy in that state and the beets config lands on the
+# BOOT MEDIA underneath the mountpoint; the drive then mounts over the top and
+# the config vanishes, with every later import reading a file that is not
+# there. Same silent failure as building the tree before mounting it.
+#
+# ALLOW_UNMOUNTED_SRV exists for install-test.sh, which points SRV at a
+# temporary directory. Never set it on a real machine.
+if [ "${ALLOW_UNMOUNTED_SRV:-0}" != "1" ] && ! mountpoint -q "$SRV"; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    warn "$SRV is not a mount point. A real run would refuse."
+  else
+    die "$SRV is not a mount point — the library drive is not mounted.
+       Deploying now would write the beets config onto the boot media,
+       underneath the mountpoint, where the drive will hide it the moment
+       it comes back. Mount it first (§4), then re-run."
+  fi
+fi
 
 # The atomic hand-off from staging into the inbox is only atomic while both are
 # on one filesystem. Mount them separately and `mv` silently becomes
 # copy-then-delete: the path unit fires partway through and beets imports a
 # half-written album (§12). Nothing else checks this, and the failure is silent,
 # so check it here on every deploy — it costs one stat and catches a remount.
-if [ -d /srv/inbox ] && [ -d /srv/staging ]; then
-  if [ "$(stat -c %d /srv/inbox)" != "$(stat -c %d /srv/staging)" ]; then
-    warn "/srv/inbox and /srv/staging are on DIFFERENT filesystems."
+if [ -d "$SRV/inbox" ] && [ -d "$SRV/staging" ]; then
+  if [ "$(stat -c %d "$SRV/inbox")" != "$(stat -c %d "$SRV/staging")" ]; then
+    warn "$SRV/inbox and $SRV/staging are on DIFFERENT filesystems."
     warn "The hand-off into the inbox is no longer atomic — albums can be"
     warn "imported half-written. Fix the mounts before ingesting anything."
   fi
@@ -119,6 +160,101 @@ if [ "$FORCE" -eq 0 ]; then
        Wait for it, or re-run with --force — deployment renames files into
        place, so the running job finishes on the version it started with."
   fi
+fi
+
+fi  # end deploy-only preconditions
+
+# Every path this script deploys to, derived from the repo rather than listed
+# by hand, so adding a unit or a plugin cannot leave uninstall behind. The test
+# suite asserts this covers everything a deploy would write.
+deployed_targets() {
+  printf '%s\n' /usr/local/bin/autorip.sh
+  printf '%s\n' /usr/local/bin/inbox-import.sh
+  printf '%s\n' /etc/abcde.conf
+  printf '%s\n' "$BEETS_DIR/config.yaml"
+
+  local f
+  for f in "$REPO"/ingest/beets/plugins/*.py; do
+    [ -e "$f" ] && printf '%s\n' "$BEETS_DIR/plugins/$(basename "$f")"
+  done
+  for f in "$REPO"/systemd/*.service "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
+    [ -e "$f" ] && printf '%s\n' "/etc/systemd/system/$(basename "$f")"
+  done
+
+  printf '%s\n' /etc/udev/rules.d/99-autorip.rules
+}
+
+# ----------------------------------------------------------------- uninstalling
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  say "lathe uninstall — removing what $REPO deployed"
+  [ "$DRY_RUN" -eq 1 ] && say "(dry run — nothing will be removed)"
+  say ""
+
+  # Disable before deleting. Removing a unit file while it is still enabled
+  # leaves a dangling symlink in multi-user.target.wants, which systemd then
+  # complains about on every boot.
+  say "triggers:"
+  disabled=0
+  for f in "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
+    [ -e "$f" ] || continue
+    unit_name="$(basename "$f")"
+    if systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        say "  WOULD DISABLE  $unit_name"
+      else
+        systemctl disable --now "$unit_name" >/dev/null 2>&1 || true
+        say "  disabled   $unit_name"
+      fi
+      disabled=$((disabled + 1))
+    fi
+  done
+  [ "$disabled" -eq 0 ] && say "  none enabled"
+
+  say "files:"
+  removed=0
+  abcde_removed=0
+  while IFS= read -r target; do
+    [ -e "$target" ] || { say "  absent     $target"; continue; }
+    if [ "$DRY_RUN" -eq 1 ]; then
+      say "  WOULD REMOVE  $target"
+    else
+      rm -f "$target"
+      say "  removed    $target"
+      [ "$target" = /etc/abcde.conf ] && abcde_removed=1
+    fi
+    removed=$((removed + 1))
+  done < <(deployed_targets)
+
+  if [ "$DRY_RUN" -eq 0 ]; then
+    systemctl daemon-reload 2>/dev/null || true
+    udevadm control --reload 2>/dev/null || true
+    say ""
+    say "reloaded systemd and udev"
+  fi
+
+  say ""
+  say "LEFT ALONE, deliberately:"
+  say "  $SRV — the library, the tree, beets' library.db and state.pickle"
+  say "  /etc/default/lathe — your ntfy topic and Navidrome credentials"
+  say "  the '$MUSIC_USER' user and group"
+
+  # /etc/abcde.conf is the one deployed path this script did not invent: the
+  # abcde package ships its own. Removing it leaves the package with no config
+  # at all, which is worse than the state before lathe was installed.
+  if [ "$abcde_removed" -eq 1 ]; then
+    say ""
+    warn "/etc/abcde.conf belonged to the 'abcde' package before lathe overwrote it."
+    warn "To restore the package's own version:  sudo apt install --reinstall abcde"
+  fi
+
+  say ""
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "dry run complete — $removed file(s) would be removed."
+  else
+    say "removed $removed file(s). Re-running install.sh puts them all back."
+  fi
+  exit 0
 fi
 
 # ------------------------------------------------------------------- deploying
@@ -160,6 +296,55 @@ install_file() {
 say "lathe install — from $REPO"
 [ "$DRY_RUN" -eq 1 ] && say "(dry run — nothing will be written)"
 say ""
+
+# The §4 tree. Created here rather than typed by hand in Phase 0 because the
+# scripts deployed below depend on it — autorip.sh writes to staging/rips and
+# logs/rips, inbox-import.sh reads inbox/ and writes quarantine/ — and because
+# a hand-typed `staging/incomming` looks right in a terminal and silently
+# breaks push-music.sh a week later. mkdir -p and chmod are idempotent, so a
+# tree that already exists costs nothing.
+say "$SRV tree:"
+tree_made=0
+for d in \
+  "$SRV/music" \
+  "$SRV/inbox" \
+  "$SRV/quarantine" \
+  "$SRV/staging/rips" \
+  "$SRV/staging/fetched" \
+  "$SRV/staging/incoming" \
+  "$SRV/config/navidrome" \
+  "$SRV/config/beets" \
+  "$SRV/config/librariand" \
+  "$SRV/logs/rips"
+do
+  if [ -d "$d" ]; then
+    continue
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "  WOULD CREATE  $d"
+  else
+    mkdir -p "$d"
+    say "  created    $d"
+  fi
+  tree_made=$((tree_made + 1))
+done
+[ "$tree_made" -eq 0 ] && say "  unchanged  all §4 directories already present"
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  # Non-recursive on purpose. A recursive chown would walk the entire library,
+  # which is slow on a few hundred thousand files and pointless — beets already
+  # owns what it writes.
+  chown "$MUSIC_USER:$MUSIC_USER" "$SRV" "$SRV"/* "$SRV"/staging/* "$SRV"/config/* "$SRV"/logs/* 2>/dev/null || true
+  chmod 0755 "$SRV"
+
+  # setgid, so that a file arriving from a human upload is group-owned by
+  # `music` and therefore movable and deletable by beets. Without it every
+  # upload fails at IMPORT time rather than at copy time, which is a confusing
+  # place to find out (§11 Phase 0). These are the two directories a human
+  # writes into directly.
+  chmod 2775 "$SRV/inbox" "$SRV/staging/incoming"
+  say "  setgid     $SRV/inbox, $SRV/staging/incoming"
+fi
 
 say "scripts:"
 install_file "$REPO/ingest/autorip.sh"      /usr/local/bin/autorip.sh      0755 root:root || true

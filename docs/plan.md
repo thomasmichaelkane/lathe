@@ -118,7 +118,22 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
 
 This rule has no exceptions, including the initial migration. The existing collection enters through `/srv/inbox/` and is imported by beets like anything else — it is never rsynced straight into `/srv/music`. Copying it in directly would leave those albums absent from beets' `library.db`, which means `incremental: yes` skips them forever, they never conform to the §6.3 path templates, and the library is inconsistent from day one. See Phase 1 in §11.
 
-Create a dedicated `music` user (uid 1001) owning all of `/srv`. Run containers and the rip service as that user.
+Create a dedicated `music` user (**uid and gid 1948**) owning all of `/srv`.
+Run containers and the rip service as that user.
+
+**Why 1948 and not the next free number.** The original plan said 1001, which
+turned out to be taken on Pi OS — `lpadmin`, the stock printer-admin group,
+holds gid 1001. Rather than shuffle to 1002, the pair is 1948: the year
+Columbia introduced the 33⅓ rpm microgroove LP. Beyond the joke it is a real
+debugging aid, because **only numbers cross the container boundary** — inside
+Navidrome's container there is no `music` user, just a uid writing files. When
+`ls -n` or a container log shows `1948` you know instantly whose it is, where
+`1002` could be any account the system invented. Nothing else in the 1000-59999
+range will reach it: `adduser` allocates upwards from 1000.
+
+This is not a thematic infrastructure *name* and does not conflict with §14 —
+the account is still called `music`, which is what you read in
+`systemctl status`.
 
 **The library drive is mounted at `/srv` as a whole — settled 2026-09-20 — not
 at `/srv/music`.** Three reasons, in order of how expensive getting it wrong
@@ -164,7 +179,7 @@ axis with `docker compose pull && docker compose up -d`.
 
 What is worth stating here, because it is decision rather than syntax:
 
-- **Navidrome runs as uid 1001** (`music`), the same user that owns `/srv`.
+- **Navidrome runs as uid 1948** (`music`), the same user that owns `/srv` — see §4 for why that number.
 - **`/srv/music` is mounted read-only.** That is the enforcement of §4's rule
   that nothing writes to the library except beets — not a convention, a mount
   option.
@@ -1257,7 +1272,15 @@ write to those paths:
 ```sh
 sudo ./install.sh --dry-run    # show what would change, touch nothing
 sudo ./install.sh              # deploy
+sudo ./install.sh --uninstall  # remove everything it deployed
 ```
+
+`--uninstall` takes `--dry-run` too. It removes only files this script put
+there and disables the triggers it enabled, then deliberately leaves `/srv` and
+`/etc/default/lathe` alone — the library, beets' database, and your ntfy and
+Navidrome credentials all outlive it. The one path it cannot cleanly restore is
+`/etc/abcde.conf`, which belongs to the `abcde` package; it says so, and tells
+you to `apt install --reinstall abcde`.
 
 An update is `git pull` followed by `sudo ./install.sh`. It replaces code and
 never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
@@ -1281,6 +1304,17 @@ failure that is silent:
   EOF while looking for matching '"'`, the rename case finishes cleanly on the
   old version. The script also refuses to deploy while an ingest unit is active;
   `--force` skips that check, and is safe precisely because of the rename.
+- **It refuses to deploy unless `/srv` is a mount point.** `-d` is not enough:
+  `/srv` exists on stock Debian whether or not the drive is mounted, and
+  `nofail` makes "booted fine, drive absent" an ordinary state rather than an
+  obvious emergency. Deploying then would write the beets config onto the boot
+  media *underneath* the mountpoint, where the drive hides it the moment it
+  returns, and every later import would read a file that is not there.
+- **It creates the §4 tree** and sets the setgid bits on `inbox/` and
+  `staging/incoming/`, idempotently. The scripts it deploys cannot run without
+  those directories, and a hand-typed `staging/incomming` looks right in a
+  terminal and silently breaks `push-music.sh` a week later. Group membership
+  for human accounts stays manual.
 - **It re-checks that `/srv/inbox` and `/srv/staging` share a filesystem.**
   Nothing else does, and if a remount ever splits them the atomic hand-off
   quietly becomes copy-then-delete — §12.
@@ -1450,14 +1484,21 @@ real Navidrome accepting `startScan`, and running as `music` at real `/srv`
 paths with setgid inboxes — all of which are Phase 1.
 
 ### Phase 0 — Base
+
+**The commands are in `docs/phase0-runbook.md`.** This list is the what and the
+why; the runbook is what to type, in an order where nothing depends on a step
+that has not happened yet. Deliberately not duplicated here — see §5 for what
+happens when one thing is written down twice.
+
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
-- Create `music` user (uid 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
-- **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
+- Create `music` user (**uid and gid 1948** — §4 explains why not 1001), and mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4). The `/srv` tree itself is created by `install.sh` below, not by hand.
+- **Add your own user to the `music` group** (`sudo usermod -aG music tom`, then log out and back in). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. The matching setgid bits on `/srv/inbox` and `/srv/staging/incoming` are applied by `install.sh`; the group membership is not, because which groups a human account belongs to is not a deploy script's business. Skipping it makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
 - **Run `sudo ./install.sh`** (§11). It has to come after the `music` user and
-  the `/srv` tree, and it refuses to run before them. Nothing downstream works
-  without it: the beets config every import reads only reaches
+  the mount, and refuses to run before either. It creates the §4 tree, sets the
+  setgid bits, and deploys everything in the copy table. Nothing downstream
+  works without it: the beets config every import reads only reaches
   `/srv/config/beets/config.yaml` by being deployed.
 - **Fill in `/etc/default/lathe`**, which `install.sh` has just created empty at
   0600: `NTFY_URL` for phone pushes, and `NAVIDROME_URL`/`USER`/`PASS` once
