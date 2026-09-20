@@ -1450,6 +1450,12 @@ real Navidrome accepting `startScan`, and running as `music` at real `/srv`
 paths with setgid inboxes — all of which are Phase 1.
 
 ### Phase 0 — Base
+
+**The commands are in `docs/phase0-runbook.md`.** This list is the what and the
+why; the runbook is what to type, in an order where nothing depends on a step
+that has not happened yet. Deliberately not duplicated here — see §5 for what
+happens when one thing is written down twice.
+
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
 - Create `music` user (uid 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
