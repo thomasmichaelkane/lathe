@@ -58,15 +58,4 @@
 </div>
 {% endfor %}
 
-{% if entries %}
-<p style="color:var(--ink-faint);font-size:12.5px;margin-top:20px;">
-  The artist and album above are <strong style="color:var(--ink-dim);">what the
-  source claimed</strong>, not verified metadata — a label for this screen only.
-  beets decides the real tags on import, and disagreeing with this is normal.
-  The question here is only <em>is this the record I wanted?</em>
-  Approve moves it to the inbox for the same import everything else gets;
-  reject deletes it.
-</p>
-{% endif %}
-
 {% endblock %}

@@ -396,7 +396,10 @@ def run_checks(client, auth, srv: Path):
     section("the dashboard renders")
     for path, needle in [("/", "librariand"),
                          ("/ui/quarantine", "Quarantine"),
-                         ("/ui/fetched", "Approve"),
+                         # The page title, not a button: by this point the
+                         # earlier checks have approved one entry and rejected
+                         # another, so which buttons remain depends on state.
+                         ("/ui/fetched", "Fetched"),
                          ("/ui/inbox", "Inbox"),
                          ("/ui/rips", "Result")]:
         resp = client.get(path, headers=auth)
