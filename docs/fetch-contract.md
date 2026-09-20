@@ -104,7 +104,7 @@ apart, and they need different actions.
 
 ### Field notes
 
-- **`schema`** — integer, bump on any breaking change. `libraryd` refuses to
+- **`schema`** — integer, bump on any breaking change. `librariand` refuses to
   render a schema it doesn't know rather than guessing.
 - **`state`** — always `pending_review` when written. Informational; the real
   state is which directory the files are in.
@@ -125,7 +125,7 @@ place that already does it for rips and manual drops.
 
 ## Review, and what happens after
 
-`libraryd` serves the pending queue and performs exactly two actions:
+`librariand` serves the pending queue and performs exactly two actions:
 
 | Action | Effect |
 |---|---|
@@ -142,7 +142,7 @@ moves them into `/srv/inbox/`, and never runs beets itself (§6.2). All three
 entry points end in an atomic move into the inbox, which is what makes "the
 filesystem is the API" a real rule rather than a slogan.
 
-`libraryd` endpoints (see §10 of `plan.md`):
+`librariand` endpoints (see §10 of `plan.md`):
 
 | Method | Path |
 |---|---|
