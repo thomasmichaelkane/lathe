@@ -198,6 +198,16 @@ sudo tailscale up
 tailscale ip -4
 ```
 
+`tailscale up` prints a URL to authenticate with. The Pi is headless, so open
+it on a laptop.
+
+**Then disable key expiry for this node** — admin console, Machines, `lathe`,
+the `...` menu. Tailscale node keys expire after 180 days by default. On a
+laptop that is a re-login; on a headless server it means the library silently
+drops off the tailnet six months from now, and fixing it needs local access to
+the machine you have just lost remote access to. It is a two-click setting and
+there is no good reason to leave it on for a server.
+
 ---
 
 ## 9. Clone and deploy
