@@ -8,6 +8,12 @@
 #   sudo ./install.sh              deploy
 #   sudo ./install.sh --dry-run    show what would change, touch nothing
 #   sudo ./install.sh --force      deploy even while an ingest unit is running
+#   sudo ./install.sh --uninstall  remove everything this script deployed
+#
+# --uninstall takes --dry-run too, and reading that first is the habit. It
+# removes only files this script put there, disables the triggers it enabled,
+# and deliberately leaves /srv and /etc/default/lathe alone: the library, the
+# beets database, and your ntfy and Navidrome credentials all outlive it.
 #
 # Why this exists at all: copying these by hand is fine exactly once, and a
 # trap every time after. A hotfix applied straight to /etc/abcde.conf works,
@@ -37,10 +43,12 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
 FORCE=0
+UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     -n|--dry-run) DRY_RUN=1 ;;
     -f|--force)   FORCE=1 ;;
+    -u|--uninstall) UNINSTALL=1 ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
@@ -78,6 +86,12 @@ die()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------- preconditions
 
 [ "$DRY_RUN" -eq 1 ] || [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo ./install.sh)"
+
+# An uninstall needs none of what follows: no music user (it may already be
+# gone), no mounted /srv (paths simply report absent), and no pluginpath
+# agreement (nothing is being installed). Requiring them would mean a broken
+# system could not be cleaned up, which is backwards.
+if [ "$UNINSTALL" -eq 0 ]; then
 
 id -u "$MUSIC_USER" >/dev/null 2>&1 \
   || die "user '$MUSIC_USER' does not exist — run Phase 0 first (§11)"
@@ -146,6 +160,101 @@ if [ "$FORCE" -eq 0 ]; then
        Wait for it, or re-run with --force — deployment renames files into
        place, so the running job finishes on the version it started with."
   fi
+fi
+
+fi  # end deploy-only preconditions
+
+# Every path this script deploys to, derived from the repo rather than listed
+# by hand, so adding a unit or a plugin cannot leave uninstall behind. The test
+# suite asserts this covers everything a deploy would write.
+deployed_targets() {
+  printf '%s\n' /usr/local/bin/autorip.sh
+  printf '%s\n' /usr/local/bin/inbox-import.sh
+  printf '%s\n' /etc/abcde.conf
+  printf '%s\n' "$BEETS_DIR/config.yaml"
+
+  local f
+  for f in "$REPO"/ingest/beets/plugins/*.py; do
+    [ -e "$f" ] && printf '%s\n' "$BEETS_DIR/plugins/$(basename "$f")"
+  done
+  for f in "$REPO"/systemd/*.service "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
+    [ -e "$f" ] && printf '%s\n' "/etc/systemd/system/$(basename "$f")"
+  done
+
+  printf '%s\n' /etc/udev/rules.d/99-autorip.rules
+}
+
+# ----------------------------------------------------------------- uninstalling
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  say "lathe uninstall — removing what $REPO deployed"
+  [ "$DRY_RUN" -eq 1 ] && say "(dry run — nothing will be removed)"
+  say ""
+
+  # Disable before deleting. Removing a unit file while it is still enabled
+  # leaves a dangling symlink in multi-user.target.wants, which systemd then
+  # complains about on every boot.
+  say "triggers:"
+  disabled=0
+  for f in "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
+    [ -e "$f" ] || continue
+    unit_name="$(basename "$f")"
+    if systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        say "  WOULD DISABLE  $unit_name"
+      else
+        systemctl disable --now "$unit_name" >/dev/null 2>&1 || true
+        say "  disabled   $unit_name"
+      fi
+      disabled=$((disabled + 1))
+    fi
+  done
+  [ "$disabled" -eq 0 ] && say "  none enabled"
+
+  say "files:"
+  removed=0
+  abcde_removed=0
+  while IFS= read -r target; do
+    [ -e "$target" ] || { say "  absent     $target"; continue; }
+    if [ "$DRY_RUN" -eq 1 ]; then
+      say "  WOULD REMOVE  $target"
+    else
+      rm -f "$target"
+      say "  removed    $target"
+      [ "$target" = /etc/abcde.conf ] && abcde_removed=1
+    fi
+    removed=$((removed + 1))
+  done < <(deployed_targets)
+
+  if [ "$DRY_RUN" -eq 0 ]; then
+    systemctl daemon-reload 2>/dev/null || true
+    udevadm control --reload 2>/dev/null || true
+    say ""
+    say "reloaded systemd and udev"
+  fi
+
+  say ""
+  say "LEFT ALONE, deliberately:"
+  say "  $SRV — the library, the tree, beets' library.db and state.pickle"
+  say "  /etc/default/lathe — your ntfy topic and Navidrome credentials"
+  say "  the '$MUSIC_USER' user and group"
+
+  # /etc/abcde.conf is the one deployed path this script did not invent: the
+  # abcde package ships its own. Removing it leaves the package with no config
+  # at all, which is worse than the state before lathe was installed.
+  if [ "$abcde_removed" -eq 1 ]; then
+    say ""
+    warn "/etc/abcde.conf belonged to the 'abcde' package before lathe overwrote it."
+    warn "To restore the package's own version:  sudo apt install --reinstall abcde"
+  fi
+
+  say ""
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "dry run complete — $removed file(s) would be removed."
+  else
+    say "removed $removed file(s). Re-running install.sh puts them all back."
+  fi
+  exit 0
 fi
 
 # ------------------------------------------------------------------- deploying

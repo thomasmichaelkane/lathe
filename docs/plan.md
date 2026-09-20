@@ -1272,7 +1272,15 @@ write to those paths:
 ```sh
 sudo ./install.sh --dry-run    # show what would change, touch nothing
 sudo ./install.sh              # deploy
+sudo ./install.sh --uninstall  # remove everything it deployed
 ```
+
+`--uninstall` takes `--dry-run` too. It removes only files this script put
+there and disables the triggers it enabled, then deliberately leaves `/srv` and
+`/etc/default/lathe` alone — the library, beets' database, and your ntfy and
+Navidrome credentials all outlive it. The one path it cannot cleanly restore is
+`/etc/abcde.conf`, which belongs to the `abcde` package; it says so, and tells
+you to `apt install --reinstall abcde`.
 
 An update is `git pull` followed by `sudo ./install.sh`. It replaces code and
 never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,

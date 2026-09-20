@@ -117,6 +117,63 @@ has "deploys the path unit"     "/etc/systemd/system/inbox.path"          "$OUT"
 has "creates the env file"      "/etc/default/lathe"                      "$OUT"
 
 echo
+echo "--uninstall"
+
+run_uninstall() {
+  set +e
+  env "$@" bash "$REPO/install.sh" --uninstall --dry-run >"$OUT" 2>&1
+  LAST=$?
+  set -e
+}
+
+# An uninstall must work on a system that is already broken — that is when you
+# reach for it. None of the deploy preconditions should apply.
+run_uninstall SRV="$TMP/nonexistent" MUSIC_USER=definitely-no-such-user
+check "runs without a music user or a mounted /srv" "$LAST" "0"
+has   "and names what it leaves alone" "LEFT ALONE, deliberately"  "$OUT"
+has   "including the env file"         "/etc/default/lathe"        "$OUT"
+
+run_uninstall SRV="$SRV" MUSIC_USER="$(id -un)"
+check "dry run removes nothing" "$(find "$SRV" -mindepth 1 -type f | wc -l | tr -d ' ')" "0"
+
+echo
+echo "install and uninstall cannot drift apart"
+
+# The real risk in having two lists of deployed paths is that someone adds a
+# unit or a plugin to one and not the other, and uninstall silently leaves
+# files behind. So: every path a deploy would WRITE must be a path an uninstall
+# would REMOVE — excluding the §4 tree (directories, not deployed files) and
+# /etc/default/lathe, both of which uninstall leaves alone on purpose.
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+cp "$OUT" "$TMP/install-plan.txt"
+run_uninstall SRV="$SRV" MUSIC_USER="$(id -un)"
+cp "$OUT" "$TMP/uninstall-plan.txt"
+
+is_left_alone() {
+  case "$1" in
+    "$SRV/music"|"$SRV/inbox"|"$SRV/quarantine") return 0 ;;
+    "$SRV/staging/rips"|"$SRV/staging/fetched"|"$SRV/staging/incoming") return 0 ;;
+    "$SRV/config/navidrome"|"$SRV/config/beets"|"$SRV/config/librariand") return 0 ;;
+    "$SRV/logs/rips") return 0 ;;
+    /etc/default/lathe) return 0 ;;
+  esac
+  return 1
+}
+
+drifted=0
+checked=0
+while read -r path; do
+  [ -n "$path" ] || continue
+  is_left_alone "$path" && continue
+  checked=$((checked + 1))
+  grep -qF -- "$path" "$TMP/uninstall-plan.txt" \
+    || { bad "deployed but never removed: $path"; drifted=1; }
+done < <(sed -n 's/^  WOULD \(CREATE\|UPDATE\)  \([^ ]*\).*/\2/p' "$TMP/install-plan.txt")
+
+[ "$checked" -ge 8 ] || bad "only $checked deploy targets seen — the parse above is wrong"
+[ "$drifted" -eq 0 ] && ok "every deployed file is covered by --uninstall ($checked targets)"
+
+echo
 echo "-----------------------------------------"
 printf 'install-test: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
