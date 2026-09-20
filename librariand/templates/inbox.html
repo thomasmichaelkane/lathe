@@ -11,27 +11,20 @@
 </div>
 {% else %}
 
+{# No stuck/importing label and no colour. The inbox drains by itself within
+   minutes, so anything still sitting here being visible at all IS the signal. #}
 {% for e in entries %}
-<div class="card {{ 'warn' if e.stale else 'live' }}">
+<div class="card">
   <h3>{{ e.name }}</h3>
   <div class="meta">
-    <span class="pill {{ 'warn' if e.stale else 'live' }}">{{ 'stuck' if e.stale else 'importing' }}</span>
     <span>{{ e.audio_files }} track{{ '' if e.audio_files == 1 else 's' }}</span>
     <span>{{ human(e.bytes) }}</span>
     <span>{{ (e.age_seconds / 60)|round|int }} min old</span>
     {% if not e.is_dir %}<span>loose file</span>{% endif %}
   </div>
-  {% if e.stale %}
-  <div class="why">Here longer than the settle window.</div>
-  {% endif %}
 </div>
 {% endfor %}
 
-<p style="color:var(--ink-faint);font-size:12.5px;margin-top:20px;">
-  Nothing to do here — this page is for noticing, not acting. The importer waits
-  for the directory to go quiet, imports, and sweeps whatever beets refused into
-  Quarantine. Items that stay are the signal.
-</p>
 {% endif %}
 
 {% endblock %}
