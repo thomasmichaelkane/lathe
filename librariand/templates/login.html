@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>librariand</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main style="max-width:380px;margin-top:14vh;">
+  <h1 style="font-size:28px;font-weight:800;letter-spacing:-0.03em;margin:0 0 2px;">librariand</h1>
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.14em;color:var(--ink-faint);margin-bottom:22px;">lathe</div>
+
+  {% if bad %}
+  <div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+    Wrong token.
+  </div>
+  {% endif %}
+
+  <form method="post" action="/login">
+    <input type="password" name="token" placeholder="Token" autofocus
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <div class="actions">
+      <button type="submit" class="primary" style="width:100%;">Enter</button>
+    </div>
+  </form>
+
+  <p style="color:var(--ink-faint);font-size:12.5px;margin-top:22px;">
+    The token is <code>LIBRARIAND_TOKEN</code> in <code>/etc/default/lathe</code>.
+    It is stored in a cookie on this device, so you enter it once.
+  </p>
+</main>
+</body>
+</html>

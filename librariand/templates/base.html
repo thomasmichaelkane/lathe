@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0a0a">
+<title>{% block title %}librariand{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <h1>librariand</h1>
+    <span class="sub">lathe</span>
+    {% if not no_auth %}
+    <form method="post" action="/logout"><button type="submit">Log out</button></form>
+    {% endif %}
+  </div>
+  <nav class="tabs">
+    <a href="/"              class="{{ 'on' if nav == 'overview' }}">Overview</a>
+    <a href="/ui/quarantine" class="{{ 'on' if nav == 'quarantine' }}">Quarantine
+      <span class="count {{ 'zero' if not counts.quarantine }}">{{ counts.quarantine }}</span></a>
+    <a href="/ui/fetched"    class="{{ 'on' if nav == 'fetched' }}">Fetched
+      <span class="count {{ 'zero' if not counts.fetched }}">{{ counts.fetched }}</span></a>
+    <a href="/ui/inbox"      class="{{ 'on' if nav == 'inbox' }}">Inbox
+      <span class="count {{ 'zero' if not counts.inbox }}">{{ counts.inbox }}</span></a>
+    <a href="/ui/rips"       class="{{ 'on' if nav == 'rips' }}">Rips</a>
+  </nav>
+</header>
+
+<main>
+  {# Banners live on the overview only. A warning repeated on every tab stops
+     being read by the third page, and none of these are page-specific. #}
+  {% block body %}{% endblock %}
+</main>
+
+<div id="flash" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Quarantine — librariand{% endblock %}
+
+{% block body %}
+
+{% if not cards %}
+<div class="empty">
+  <strong>Nothing quarantined.</strong>
+  beets matched everything it has seen. This is the good state.
+</div>
+{% endif %}
+
+{% for c in cards %}
+<div class="card {{ c.css }}">
+  <h3>{{ c.e.tags.album or c.e.name }}</h3>
+
+  <div class="meta">
+    <span class="pill {{ c.css if c.css in ['alarm', 'warn', 'live', 'info'] else '' }}">{{ c.label }}</span>
+    {% if c.e.tags.albumartist %}<span>{{ c.e.tags.albumartist }}</span>{% endif %}
+    <span>{{ c.e.audio_files }} track{{ '' if c.e.audio_files == 1 else 's' }}</span>
+    <span>{{ human(c.e.bytes) }}</span>
+    {% if c.e.tags.disc %}<span>disc {{ c.e.tags.disc }}{% if c.e.tags.disctotal %} of {{ c.e.tags.disctotal }}{% endif %}</span>{% endif %}
+    {% if c.e.disc_id %}<span>ripped</span>{% endif %}
+  </div>
+
+  {% if c.e.notes %}
+  <ul class="notes">{% for n in c.e.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <div class="field">
+    <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
+           placeholder="MusicBrainz release ID, or a Bandcamp album URL"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="primary" data-action="resolve"
+            data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Resolve</button>
+  </div>
+
+  <div class="actions">
+    {% if c.group %}
+    <button class="primary" data-action="merge"
+            data-entries='{{ c.group.members|tojson }}'
+            data-album="{{ c.group.album or '' }}">Merge {{ c.group.members|length }} discs</button>
+    {% endif %}
+    <button data-action="retry" data-name="{{ c.e.name }}">Retry import</button>
+    <button class="danger" data-action="drop" data-name="{{ c.e.name }}">Delete</button>
+  </div>
+</div>
+{% endfor %}
+
+{% endblock %}

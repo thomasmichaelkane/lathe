@@ -183,9 +183,14 @@ What is worth stating here, because it is decision rather than syntax:
 - **`/srv/music` is mounted read-only.** That is the enforcement of §4's rule
   that nothing writes to the library except beets — not a convention, a mount
   option.
-- **`librariand` is commented out until Phase 6.** It has `build: ./librariand`
-  and there is no Dockerfile, so leaving it live means `docker compose up`
-  fails on a fresh Pi for a service that does nothing yet.
+- **`librariand` is not in compose at all.** It runs as a systemd service on
+  the host instead — `systemd/librariand.service`, deployed by `install.sh`
+  like everything else. It moved out of compose because
+  `/quarantine/{id}/resolve` re-runs a beets import, and beets is installed
+  per-user with `uv` on the host; a container would have had to ship its own
+  beets, which is two installs to keep in step and one of them writing to the
+  library. Running on the host also means no Dockerfile and no image to rebuild
+  when a template changes.
 - **`ND_ENABLETRANSCODINGCONFIG` starts on and must be turned off** — see
   below.
 - **`ND_SCANSCHEDULE` is 6h and `ND_SESSIONTIMEOUT` is 720h.** The first is a
@@ -1185,6 +1190,29 @@ Stack, screens, API surface, visual direction and build phases live in
 
 FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 
+**Built and tested.** `librariand/` holds the service; `librariand-test.sh` is
+80 checks against a fabricated `/srv`. Run it with
+`sudo systemctl start librariand` and open port 8080 over the tailnet.
+
+Two things about how it runs:
+
+- **On the host, not in a container** — see §5. It is the only service here
+  that is not in compose.
+- **Auth is a bearer token in `LIBRARIAND_TOKEN`** (`/etc/default/lathe`),
+  accepted either as an `Authorization` header for the API or as a cookie set
+  by a one-off login form for the dashboard. Leaving it unset runs the
+  dashboard open, which is defensible on a tailnet with no exposed ports — so
+  it is allowed, and every page carries a banner saying so rather than letting
+  you forget.
+
+**Deferred, deliberately.** `/rips/current` reports only whether a rip unit is
+running, and `/events` (SSE per-track progress) is not built: real progress
+means parsing abcde's output as it goes, and with no drive attached that would
+be writing tests against a guess at the format. `/library/violations`,
+`/library/lint` and `/library/fix` wait for `lint.py` to exist. `/releases/split`
+and `/releases/merge` are the presentation-layer merge the table below already
+calls low priority.
+
 *(Named `librariand` — it tends the library rather than serving it, and it covers lint, rips and stats as well as quarantine. See §14 for the two names it had before this one.)*
 
 | Method | Path | Does |
@@ -1213,9 +1241,21 @@ FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
 
 **On `/rips`:** rip history comes from `/srv/logs/rips/`, which records the rip
 and nothing after it — the ripper hands off before the import happens (§6.2), so
-it cannot know the outcome. Each disc log carries `handoff_path`; `librariand`
-resolves final status by checking whether that name is still sitting in
-`/srv/quarantine/`.
+it cannot know where the album ended up. **`librariand` does not try to work it
+out either**, and that is a deliberate reversal: an earlier build derived the
+outcome from whether `handoff_path` was still sitting in the inbox or in
+quarantine, and it was wrong to.
+
+The useful half was already better served elsewhere — an album beets would not
+match is on the quarantine page, which is where the actions are. The rest was
+an inference from *absence*: "in neither, therefore imported" holds until you
+delete something from quarantine by hand, at which point a months-old rip log
+quietly starts claiming an album reached the library. A log that revises the
+past is worse than one that says less.
+
+So `/rips` answers only what the log records: the disc read, or it failed and
+here is why, plus whether there were read errors — which mean *consider a
+re-rip* even on a disc that passed.
 
 Ship a minimal web dashboard on the same service — this is the actual UI for quarantine review and lint violations, and it works from any browser, so it doesn't need to live in the Android app.
 
@@ -1256,6 +1296,7 @@ because almost nothing runs from where it is checked out:
 | `ingest/beets/config.yaml` | `/srv/config/beets/config.yaml` |
 | `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
 | `systemd/*.service`, `systemd/*.path`, `systemd/*.timer` | `/etc/systemd/system/` |
+| `librariand/*.py`, `librariand/templates/`, `librariand/static/` | `/usr/local/lib/librariand/` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
 | `compose/docker-compose.yml` | **nothing — it runs from the checkout** (see below) |
 
@@ -1321,13 +1362,19 @@ failure that is silent:
 - **`/srv/config/beets/` gets named files copied into it, never a sync.**
   `library.db` and `state.pickle` live in that directory; clearing it would
   reset `incremental` and lose the library database.
-- **Every `.path` and `.timer` in `systemd/` is deployed and enabled**, and
-  restarted when its unit file changes. `.service` units are deployed but never
-  enabled — `autorip@.service` is templated and started by udev,
-  `inbox-import.service` by its path unit. The `.timer` glob is there ahead of
-  `lint` (§6.6) and `restic` (§8), because a unit type missing from it is not
-  an error anywhere: the file just never arrives, and a timer that was never
-  deployed looks exactly like a timer that never fired.
+- **A unit is enabled if, and only if, it declares an `[Install]` section.**
+  That is systemd's own rule — a unit without one cannot be enabled at all —
+  and it happens to pick out exactly the right set: `inbox.path` and
+  `librariand.service` yes, `autorip@.service` (templated, started by udev) and
+  `inbox-import.service` (started by its path unit) no. An earlier version
+  keyed off the file extension and would have left `librariand.service`
+  deployed and disabled, which looks identical to working until you notice
+  nothing is listening. Units are also restarted when their file changes, and
+  `librariand` additionally when only its code changed.
+- **`librariand`'s dependencies are a venv** at
+  `/usr/local/lib/librariand/venv`, built once. This is the only step that
+  touches the network, so it is guarded and never fatal: with no internet the
+  rest of the deploy still completes and only librariand fails to start.
 
 `/etc/default/lathe` is created once with everything unset and never
 overwritten. It holds the ntfy topic and the Navidrome login, is 0600
@@ -1561,9 +1608,14 @@ which Phase 1 already provides.
 - **Done when:** it's the app you reach for instead of the stock client
 
 ### Phase 6 — librariand
-- FastAPI service, endpoints above
-- Web dashboard: quarantine review, lint violations, rip history
-- **Done when:** you can resolve a bad match from your phone
+- ~~FastAPI service, endpoints above~~ — **built.** Quarantine queue, fetched
+  review gate, rip history, health and stats. See §10 for what is deferred.
+- ~~Web dashboard: quarantine review, rip history~~ — **built.** Server-rendered,
+  no build step, mobile-first, fixed dark theme.
+- Lint violations in the dashboard, once `lint.py` exists (§6.6)
+- Live rip progress (`/events`), once there is a drive to watch
+- **Done when:** you can resolve a bad match from your phone — which needs a
+  real quarantine pile to try it against, so it is really proven in Phase 1.
 
 ### Phase 7 — v2 features
 - `/releases/merge` in `librariand` (§10), if merging box sets by hand gets tiring

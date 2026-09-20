@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}librariand{% endblock %}
+
+{% block body %}
+
+{% if no_auth %}
+<div class="banner">
+  <strong>No token set.</strong>
+  Set <code>LIBRARIAND_TOKEN</code> in <code>/etc/default/lathe</code>.
+</div>
+{% endif %}
+
+{% if not health.srv_mounted %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>/srv is not mounted.</strong>
+</div>
+{% endif %}
+
+{# `is false` and not `not`: _unit_active returns None when systemctl could not
+   be reached, and "we could not tell" is not the same as "it is down". #}
+{% if health.inbox_watcher is false %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong><code>inbox.path</code> is not active.</strong> Nothing will import.
+</div>
+{% endif %}
+
+<h2 class="section">Pipeline</h2>
+<div class="tiles">
+  <a class="tile {{ 'warn' if counts.quarantine }}" href="/ui/quarantine">
+    <span class="n">{{ counts.quarantine }}</span>
+    <span class="k">Quarantined</span>
+  </a>
+  <a class="tile {{ 'acid' if counts.fetched }}" href="/ui/fetched">
+    <span class="n">{{ counts.fetched }}</span>
+    <span class="k">Fetched</span>
+  </a>
+  <a class="tile {{ 'alarm' if health.rips_needing_attention }}" href="/ui/rips">
+    <span class="n">{{ health.rips_needing_attention }}</span>
+    <span class="k">Ripped</span>
+  </a>
+  <a class="tile" href="/ui/inbox">
+    <span class="n">{{ counts.inbox }}</span>
+    <span class="k">Inbox</span>
+  </a>
+</div>
+
+<h2 class="section">Library</h2>
+<div class="tiles">
+  <div class="tile">
+    <span class="n">{{ stats.albums }}</span>
+    <span class="k">Albums</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ stats.artists }}</span>
+    <span class="k">Artists</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ stats.rips_total }}</span>
+    <span class="k">Discs ripped</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ health.disk.percent_used if health.disk.percent_used is defined else '?' }}%</span>
+    <span class="k">Disk used</span>
+  </div>
+</div>
+
+{% if health.disk.total is defined %}
+<div class="bar">
+  <span class="{{ 'alarm' if health.disk.percent_used > 90 else ('warn' if health.disk.percent_used > 75 else '') }}"
+        style="width: {{ health.disk.percent_used }}%"></span>
+</div>
+<div class="meta" style="margin-top:6px;color:var(--ink-faint);font-size:12px;">
+  {{ human(health.disk.free) }} free of {{ human(health.disk.total) }}
+</div>
+{% endif %}
+
+<h2 class="section">Optical drive</h2>
+{% if health.ripping_now %}
+<div class="card live">
+  <h3>Ripping now — {{ health.ripping_now.device }}</h3>
+  <div class="meta"><span class="mono">{{ health.ripping_now.unit }}</span></div>
+</div>
+{% elif not health.optical_drive %}
+<div class="card">
+  <h3>No optical drive detected</h3>
+</div>
+{% else %}
+<div class="card good">
+  <h3>Idle — {{ health.optical_drive|join(', ') }}</h3>
+  {% if health.last_successful_rip %}
+  <div class="meta">
+    <span>last: {{ health.last_successful_rip.album or health.last_successful_rip.disc_id }}</span>
+    <span>{{ (health.last_successful_rip.at or '')[:16]|replace('T', ' ') }}</span>
+  </div>
+  {% else %}
+  <div class="meta">No successful rips yet.</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if not health.beets %}
+<div class="banner" style="margin-top:18px;">
+  <strong><code>beet</code> is not on PATH.</strong> Resolve will fail.
+</div>
+{% endif %}
+
+{% endblock %}
