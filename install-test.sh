@@ -166,7 +166,17 @@ while read -r path; do
   [ -n "$path" ] || continue
   is_left_alone "$path" && continue
   checked=$((checked + 1))
-  grep -qF -- "$path" "$TMP/uninstall-plan.txt" \
+  # Covered either by being named outright, or by a parent directory being
+  # removed whole — which is how the librariand venv goes, since it is built
+  # rather than copied and so is not in deployed_targets.
+  covered=0
+  grep -qF -- "$path" "$TMP/uninstall-plan.txt" && covered=1
+  if [ "$covered" -eq 0 ]; then
+    while read -r rmdir_line; do
+      case "$path" in "$rmdir_line"*) covered=1; break ;; esac
+    done < <(sed -n 's#^ *\(WOULD REMOVE\|removed\|absent\) *\([^ ]*/\)\( .*\)\?$#\2#p' "$TMP/uninstall-plan.txt")
+  fi
+  [ "$covered" -eq 1 ] \
     || { bad "deployed but never removed: $path"; drifted=1; }
 done < <(sed -n 's/^  WOULD \(CREATE\|UPDATE\)  \([^ ]*\).*/\2/p' "$TMP/install-plan.txt")
 

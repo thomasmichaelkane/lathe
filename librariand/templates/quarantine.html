@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Quarantine — librariand{% endblock %}
+
+{% block body %}
+
+{% if groups %}
+<h2 class="section">Looks like one release, split across discs</h2>
+{% for g in groups %}
+<div class="group">
+  <h3 style="margin:0 0 4px;font-size:16px;font-weight:750;">
+    {{ g.album or g.key }}
+    <span class="pill {{ 'acid' if g.confidence == 'certain' else '' }}">{{ g.confidence }}</span>
+  </h3>
+  <div class="meta" style="color:var(--ink-dim);font-size:12.5px;">
+    {{ g.members|length }} of {{ g.expected_discs or '?' }} discs
+    {% if g.complete %}· complete{% else %}· incomplete{% endif %}
+    · {{ g.reason }}
+  </div>
+  <ol>{% for m in g.members %}<li class="mono">{{ m }}</li>{% endfor %}</ol>
+
+  {% if g.mergeable and g.complete %}
+  <div class="actions">
+    <button class="primary" data-action="merge"
+            data-entries='{{ g.members|tojson }}'
+            data-album="{{ g.album or '' }}">Merge &amp; send to inbox</button>
+  </div>
+  {% elif not g.complete %}
+  <div class="why">
+    Waiting for {{ (g.expected_discs or 0) - g.members|length }} more disc(s).
+    Rip the rest, then merge — a partial set will not match on import either.
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+<h2 class="section">Everything in quarantine ({{ entries|length }})</h2>
+
+{% if not entries %}
+<div class="empty">
+  <strong>Nothing quarantined.</strong>
+  beets matched everything it has seen. This is the good state.
+</div>
+{% endif %}
+
+{% for e in entries %}
+<div class="card {{ 'warn' if e.notes else '' }}">
+  <h3>{{ e.tags.album or e.name }}</h3>
+  <div class="meta">
+    {% if e.tags.albumartist %}<span>{{ e.tags.albumartist }}</span>{% endif %}
+    <span>{{ e.audio_files }} track{{ '' if e.audio_files == 1 else 's' }}</span>
+    <span>{{ human(e.bytes) }}</span>
+    {% if e.tags.disc %}<span>disc {{ e.tags.disc }}{% if e.tags.disctotal %} of {{ e.tags.disctotal }}{% endif %}</span>{% endif %}
+    {% if not e.is_dir %}<span class="pill">loose file</span>{% endif %}
+    {% if e.disc_id %}<span class="pill">ripped</span>{% endif %}
+  </div>
+
+  {% if e.notes %}
+  <ul class="notes">{% for n in e.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <div class="field">
+    <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
+           placeholder="MusicBrainz release ID, or a Bandcamp album URL"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="primary" data-action="resolve"
+            data-name="{{ e.name }}" data-idx="{{ loop.index }}">Resolve</button>
+  </div>
+
+  <div class="actions">
+    <button data-action="retry" data-name="{{ e.name }}">Retry import</button>
+    <button class="danger" data-action="drop" data-name="{{ e.name }}">Delete</button>
+  </div>
+</div>
+{% endfor %}
+
+{% if entries %}
+<p style="color:var(--ink-faint);font-size:12.5px;margin-top:20px;">
+  <strong style="color:var(--ink-dim);">Resolve</strong> forces a match against an
+  ID you choose and re-imports. Bandcamp URLs are accepted because Bandcamp
+  edits and bootlegs are largely absent from MusicBrainz — for those there is no
+  MusicBrainz ID to type.
+  <strong style="color:var(--ink-dim);">Retry</strong> just puts it back in the
+  inbox unchanged, which only helps if something else has changed since.
+</p>
+{% endif %}
+
+{% endblock %}

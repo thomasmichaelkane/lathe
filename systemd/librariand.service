@@ -1,0 +1,55 @@
+# The dashboard and API — quarantine review, fetched approval, rip history.
+#
+# The only long-running service this repo ships. Everything else is a batch job
+# triggered by udev, a path unit or a timer (§14).
+#
+# Runs on the host rather than in a container, unlike Navidrome. §5 explains
+# why: /quarantine/{id}/resolve re-runs a beets import, and beets is installed
+# per-user with uv on this machine. A container would have had to ship its own
+# beets — two installs to keep in step, one of which writes to the library.
+
+[Unit]
+Description=librariand — library dashboard and API
+After=network-online.target srv.mount
+Wants=network-online.target
+
+# Nothing works without the library drive. Without this the service starts on a
+# boot where /srv failed to mount (which `nofail` makes an ordinary outcome),
+# finds empty directories, and reports a healthy system with no music in it.
+RequiresMountsFor=/srv
+
+[Service]
+Type=exec
+User=music
+Group=music
+
+# LIBRARIAND_TOKEN lives here, alongside the ntfy topic and the Navidrome
+# password. The leading '-' keeps the file optional: with no token set the
+# dashboard runs open on the tailnet and says so on every page.
+EnvironmentFile=-/etc/default/lathe
+
+# beets is installed per-user with `uv`, which puts it in ~/.local/bin — and
+# this service runs as `music`, not as the user who installed it. Without the
+# last entry here, `beet` is not on PATH and resolving a quarantined release
+# fails at the point of use rather than at deploy. /health reports it, and the
+# dashboard shows a banner, so a wrong path here is visible rather than silent.
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/tom/.local/bin"
+
+ExecStart=/usr/local/lib/librariand/venv/bin/python /usr/local/lib/librariand/app.py
+
+Restart=on-failure
+RestartSec=5
+
+# A dashboard must never be the reason playback stutters or an import crawls.
+Nice=5
+
+# It reads and writes /srv and nothing else. These are cheap and rule out a
+# whole class of mistake if a dependency is ever compromised.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv
+
+[Install]
+WantedBy=multi-user.target

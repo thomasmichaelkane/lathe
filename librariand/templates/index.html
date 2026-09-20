@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}librariand{% endblock %}
+
+{% block body %}
+
+{% if not health.srv_mounted %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>/srv is not mounted.</strong> The library drive is absent and the Pi
+  booted anyway, which is what <code>nofail</code> is for. Nothing below is
+  meaningful until it is back, and nothing should be written in the meantime.
+</div>
+{% endif %}
+
+<h2 class="section">Needs you</h2>
+<div class="tiles">
+  <div class="tile {{ 'warn' if counts.quarantine }}">
+    <span class="n">{{ counts.quarantine }}</span>
+    <span class="k">Quarantined</span>
+  </div>
+  <div class="tile {{ 'acid' if counts.fetched }}">
+    <span class="n">{{ counts.fetched }}</span>
+    <span class="k">To review</span>
+  </div>
+  <div class="tile {{ 'alarm' if health.rips_needing_attention }}">
+    <span class="n">{{ health.rips_needing_attention }}</span>
+    <span class="k">Rips w/ issues</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ counts.inbox }}</span>
+    <span class="k">In the inbox</span>
+  </div>
+</div>
+
+{% if counts.inbox and health.inbox_watcher is false %}
+<div class="banner" style="margin-top:12px;">
+  <strong>{{ counts.inbox }} item(s) in the inbox and <code>inbox.path</code> is
+  not active.</strong> Nothing is going to import them.
+  Try <code>sudo systemctl enable --now inbox.path</code>.
+</div>
+{% endif %}
+
+<h2 class="section">Library</h2>
+<div class="tiles">
+  <div class="tile">
+    <span class="n">{{ stats.albums }}</span>
+    <span class="k">Albums</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ stats.artists }}</span>
+    <span class="k">Artists</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ stats.rips_total }}</span>
+    <span class="k">Discs ripped</span>
+  </div>
+  <div class="tile">
+    <span class="n">{{ health.disk.percent_used if health.disk.percent_used is defined else '?' }}%</span>
+    <span class="k">Disk used</span>
+  </div>
+</div>
+
+{% if health.disk.total is defined %}
+<div class="bar">
+  <span class="{{ 'alarm' if health.disk.percent_used > 90 else ('warn' if health.disk.percent_used > 75 else '') }}"
+        style="width: {{ health.disk.percent_used }}%"></span>
+</div>
+<div class="meta" style="margin-top:6px;color:var(--ink-faint);font-size:12px;">
+  {{ human(health.disk.free) }} free of {{ human(health.disk.total) }}
+</div>
+{% endif %}
+
+<h2 class="section">The drive</h2>
+{% if health.ripping_now %}
+<div class="card live">
+  <h3>Ripping now — {{ health.ripping_now.device }}</h3>
+  <div class="meta"><span class="mono">{{ health.ripping_now.unit }}</span></div>
+</div>
+{% elif not health.optical_drive %}
+<div class="card">
+  <h3>No optical drive detected</h3>
+  <div class="meta">Nothing at <code>/dev/sr*</code>. Inserting a disc will do nothing
+    — the udev rule has no device to fire on.</div>
+</div>
+{% else %}
+<div class="card good">
+  <h3>Idle — {{ health.optical_drive|join(', ') }}</h3>
+  {% if health.last_successful_rip %}
+  <div class="meta">
+    <span>last: {{ health.last_successful_rip.album or health.last_successful_rip.disc_id }}</span>
+    <span>{{ (health.last_successful_rip.at or '')[:16]|replace('T', ' ') }}</span>
+    <span class="pill">{{ health.last_successful_rip.outcome }}</span>
+  </div>
+  {% else %}
+  <div class="meta">No successful rips yet.</div>
+  {% endif %}
+  <div class="actions">
+    <button data-action="eject" data-device="{{ health.optical_drive[0] }}">Eject tray</button>
+  </div>
+</div>
+{% endif %}
+
+{% if stats.top_artists %}
+<h2 class="section">Most albums</h2>
+<table class="log">
+  <tbody>
+  {% for a in stats.top_artists %}
+    <tr><td>{{ a.artist }}</td>
+        <td style="text-align:right;color:var(--ink-dim);width:80px;">{{ a.albums }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if not health.beets %}
+<div class="banner" style="margin-top:18px;">
+  <strong><code>beet</code> is not on this service's PATH.</strong>
+  Resolving a quarantined release re-runs a beets import, so that action will
+  fail. beets is installed per-user with <code>uv</code>; librariand runs as
+  <code>music</code>.
+</div>
+{% endif %}
+
+{% endblock %}

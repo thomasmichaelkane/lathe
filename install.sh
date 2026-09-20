@@ -56,6 +56,7 @@ done
 
 MUSIC_USER="${MUSIC_USER:-music}"
 SRV="${SRV:-/srv}"
+LIBRARIAND_DIR="${LIBRARIAND_DIR:-/usr/local/lib/librariand}"
 BEETS_DIR="${BEETS_DIR:-$SRV/config/beets}"
 
 CHANGED=()
@@ -182,6 +183,18 @@ deployed_targets() {
   done
 
   printf '%s\n' /etc/udev/rules.d/99-autorip.rules
+
+  for f in "$REPO"/librariand/*.py; do
+    case "$(basename "$f")" in
+      librariand_test.py) continue ;;   # test-only, never deployed
+    esac
+    printf '%s\n' "$LIBRARIAND_DIR/$(basename "$f")"
+  done
+  for sub_dir in templates static; do
+    for f in "$REPO"/librariand/"$sub_dir"/*; do
+      [ -f "$f" ] && printf '%s\n' "$LIBRARIAND_DIR/$sub_dir/$(basename "$f")"
+    done
+  done
 }
 
 # ----------------------------------------------------------------- uninstalling
@@ -196,8 +209,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   # complains about on every boot.
   say "triggers:"
   disabled=0
-  for f in "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
+  for f in "$REPO"/systemd/*.path "$REPO"/systemd/*.timer "$REPO"/systemd/*.service; do
     [ -e "$f" ] || continue
+    grep -q '^\[Install\]' "$f" || continue
     unit_name="$(basename "$f")"
     if systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
       if [ "$DRY_RUN" -eq 1 ]; then
@@ -225,6 +239,21 @@ if [ "$UNINSTALL" -eq 1 ]; then
     fi
     removed=$((removed + 1))
   done < <(deployed_targets)
+
+  # The venv is not in deployed_targets — it is built, not copied — so take
+  # the whole directory rather than leaving a few hundred megabytes of
+  # site-packages behind with nothing to run it.
+  # Reported even when absent, for the same reason the file loop above reports
+  # absent files: the output is the record of what an uninstall covers, and a
+  # line that only appears when there is something to delete cannot be checked.
+  if [ ! -d "$LIBRARIAND_DIR" ]; then
+    say "  absent     $LIBRARIAND_DIR/"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    say "  WOULD REMOVE  $LIBRARIAND_DIR/ (including its venv)"
+  else
+    rm -rf "$LIBRARIAND_DIR"
+    say "  removed    $LIBRARIAND_DIR/ (including its venv)"
+  fi
 
   if [ "$DRY_RUN" -eq 0 ]; then
     systemctl daemon-reload 2>/dev/null || true
@@ -374,18 +403,67 @@ done
 # type missing from this glob is not an error anywhere — the file simply never
 # reaches /etc/systemd/system, and a timer that was never deployed looks exactly
 # like a timer that never fired.
+# librariand is a directory of code rather than a single script, so it does not
+# fit the copy table's one-file-one-destination shape. Same rules apply: every
+# file is renamed into place, and nothing here is ever edited in situ.
+say "librariand ($LIBRARIAND_DIR):"
+librariand_changed=0
+for rel in app.py quarantine.py fetched.py rips.py resolve.py system.py; do
+  if install_file "$REPO/librariand/$rel" "$LIBRARIAND_DIR/$rel" 0644 root:root; then
+    librariand_changed=1
+  fi
+done
+for sub_dir in templates static; do
+  for f in "$REPO"/librariand/"$sub_dir"/*; do
+    [ -f "$f" ] || continue
+    if install_file "$f" "$LIBRARIAND_DIR/$sub_dir/$(basename "$f")" 0644 root:root; then
+      librariand_changed=1
+    fi
+  done
+done
+
+# Its dependencies live in a venv beside it. This is the one step in the script
+# that touches the network, so it is guarded, done once, and never fatal: a Pi
+# with no internet still gets a complete deploy of everything else, and
+# librariand simply fails to start until the venv exists.
+if [ "$DRY_RUN" -eq 1 ]; then
+  if [ -x "$LIBRARIAND_DIR/venv/bin/python" ]; then
+    say "  unchanged  $LIBRARIAND_DIR/venv"
+  else
+    say "  WOULD CREATE  $LIBRARIAND_DIR/venv (downloads fastapi, uvicorn, jinja2)"
+  fi
+elif [ -x "$LIBRARIAND_DIR/venv/bin/python" ]; then
+  say "  unchanged  $LIBRARIAND_DIR/venv"
+else
+  say "  creating   $LIBRARIAND_DIR/venv — this needs the network, once"
+  if python3 -m venv "$LIBRARIAND_DIR/venv" >/dev/null 2>&1 \
+     && "$LIBRARIAND_DIR/venv/bin/pip" install --quiet --disable-pip-version-check \
+          fastapi uvicorn jinja2 python-multipart mediafile >/dev/null 2>&1; then
+    say "  created    $LIBRARIAND_DIR/venv"
+    librariand_changed=1
+  else
+    warn "could not build $LIBRARIAND_DIR/venv."
+    warn "Everything else deployed fine; librariand will not start until this"
+    warn "succeeds. Needs python3-venv installed and a working network:"
+    warn "  sudo apt install -y python3-venv && sudo ./install.sh"
+  fi
+fi
+
 say "systemd units:"
 for unit in "$REPO"/systemd/*.service "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
   [ -e "$unit" ] || continue
   unit_name="$(basename "$unit")"
 
-  # .path and .timer units are triggers: they do nothing at all until enabled,
-  # so the deploy enables them below. .service units are not enabled here —
-  # autorip@.service is templated and started by udev, and inbox-import.service
-  # is started by its path unit. Enabling either would be wrong.
-  case "$unit_name" in
-    *.path|*.timer) ACTIVATABLE+=("$unit_name") ;;
-  esac
+  # Enable exactly the units that declare themselves enableable. A unit with
+  # no [Install] section cannot be enabled at all — systemctl refuses — and the
+  # three that lack one are precisely the three that must not be: autorip@ is
+  # templated and started by udev, inbox-import is started by its path unit.
+  # Reading the file beats a list of extensions here, because librariand.service
+  # IS a long-running service that must come up at boot, and an extension rule
+  # would have silently left it deployed and disabled.
+  if grep -q '^\[Install\]' "$unit"; then
+    ACTIVATABLE+=("$unit_name")
+  fi
 
   if install_file "$unit" "/etc/systemd/system/$unit_name" 0644 root:root; then
     SYSTEMD_CHANGED=1
@@ -439,6 +517,16 @@ NTFY_URL=
 NAVIDROME_URL=
 NAVIDROME_USER=
 NAVIDROME_PASS=
+
+# librariand's dashboard and API. Unset means no auth at all: anyone who can
+# reach this machine on the tailnet can approve, merge and delete. That is a
+# defensible choice with no ports exposed, which is why it is allowed — but it
+# is a choice, and every page of the dashboard says so until you make it.
+#
+# Generate one with:  openssl rand -hex 24
+#
+#   LIBRARIAND_TOKEN=...
+LIBRARIAND_TOKEN=
 EOF
   chmod 0600 "$tmp"
   chown root:root "$tmp"
@@ -463,6 +551,13 @@ fi
 # so the new version takes effect now rather than at the next boot. Restarting
 # a path unit only re-arms the watch — it does not start an import, and
 # anything already sitting in the inbox still triggers on the next change.
+# A code-only change leaves the unit file untouched, so the generic
+# changed-unit restart below would not notice. Say so explicitly.
+if [ "${librariand_changed:-0}" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] \
+   && systemctl is-active --quiet librariand.service 2>/dev/null; then
+  CHANGED_UNITS+=("librariand.service")
+fi
+
 for unit_name in "${ACTIVATABLE[@]:-}"; do
   [ -n "$unit_name" ] || continue
   if ! systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then

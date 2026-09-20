@@ -57,24 +57,13 @@ services:
       - /srv/music:/music:ro
       - /srv/config/navidrome:/data
 
-# librariand is deliberately absent until Phase 6.
+# librariand is deliberately NOT here.
 #
-# §5 of the plan lists it here with `build: ./librariand`, but the only thing in
-# librariand/ today is quarantine.py — a standalone CLI that needs no container
-# and no server, and is the tool for the Phase 1 quarantine evening. There is
-# no Dockerfile, so leaving the stanza in would mean `docker compose up` fails
-# on a fresh Pi for a service that does nothing yet.
+# It runs as a systemd service on the host instead — systemd/librariand.service,
+# deployed by install.sh. §5 and §10 of docs/plan.md carry the reasoning: it
+# re-runs a beets import to resolve a quarantined release, and beets lives on
+# the host via uv. A container would have needed its own beets, which is two
+# installs to keep in step and one of them writing to the library.
 #
-# Phase 6 adds it back, roughly:
-#
-#   librariand:
-#     build: ./librariand
-#     container_name: librariand
-#     restart: unless-stopped
-#     user: "1948:1948"
-#     ports:
-#       - "8080:8080"
-#     environment:
-#       NAVIDROME_URL: http://navidrome:4533
-#     volumes:
-#       - /srv:/srv
+# So this file is Navidrome and nothing else, which is also why it needs no
+# Dockerfile anywhere in the repo.

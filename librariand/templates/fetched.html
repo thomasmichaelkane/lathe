@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Fetched — librariand{% endblock %}
+
+{% block body %}
+
+<h2 class="section">Awaiting review ({{ entries|length }})</h2>
+
+{% if not entries %}
+<div class="empty">
+  <strong>Nothing waiting.</strong>
+  Downloads land in <code>/srv/staging/fetched</code> and wait here until you
+  approve them. A directory with no <code>fetch.json</code> yet is still being
+  written and is deliberately not shown.
+</div>
+{% endif %}
+
+{% for e in entries %}
+<div class="card {{ 'alarm' if not e.readable else ('warn' if e.warnings else 'good') }}">
+
+  {% if not e.readable %}
+    <h3>{{ e.id }}</h3>
+    <div class="why bad">{{ e.problem }}</div>
+    <div class="actions">
+      <button class="danger" data-action="reject" data-name="{{ e.id }}">Delete</button>
+    </div>
+
+  {% else %}
+    <h3>{{ e.release.album or e.id }}</h3>
+    <div class="meta">
+      {% if e.release.artist %}<span>{{ e.release.artist }}</span>{% endif %}
+      {% if e.release.year %}<span>{{ e.release.year }}</span>{% endif %}
+      <span>{{ e.audio_files }} file{{ '' if e.audio_files == 1 else 's' }}{% if e.release.track_count %} / {{ e.release.track_count }} claimed{% endif %}</span>
+      <span>{{ human(e.bytes) }}</span>
+      {% if e.release.format %}<span class="pill">{{ e.release.format }}</span>{% endif %}
+      {% if e.clean %}<span class="pill ok">checks passed</span>{% endif %}
+    </div>
+
+    {% if e.source.url %}
+    <div class="meta" style="margin-top:5px;">
+      <a href="{{ e.source.url }}" target="_blank" rel="noopener noreferrer"
+         class="mono">{{ e.source.site or e.source.url }}</a>
+      {% if e.source.adapter %}<span class="pill">{{ e.source.adapter }}</span>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if e.warnings %}
+    <ul class="notes">{% for w in e.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    {% if e.notes %}
+    <div class="why">{% for n in e.notes %}{{ n }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+    {% endif %}
+
+    <div class="actions">
+      <button class="primary" data-action="approve" data-name="{{ e.id }}">Approve</button>
+      <button class="danger"  data-action="reject"  data-name="{{ e.id }}">Reject</button>
+    </div>
+  {% endif %}
+
+</div>
+{% endfor %}
+
+{% if entries %}
+<p style="color:var(--ink-faint);font-size:12.5px;margin-top:20px;">
+  The artist and album above are <strong style="color:var(--ink-dim);">what the
+  source claimed</strong>, not verified metadata — a label for this screen only.
+  beets decides the real tags on import, and disagreeing with this is normal.
+  The question here is only <em>is this the record I wanted?</em>
+  Approve moves it to the inbox for the same import everything else gets;
+  reject deletes it.
+</p>
+{% endif %}
+
+{% endblock %}
