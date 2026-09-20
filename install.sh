@@ -2,8 +2,8 @@
 # Deploy this repo onto the system paths.
 #
 # This is the ONLY way anything in this repo should reach a system path. The
-# copy table is §11 of docs/plan.md, and it is reproduced in deploy() below
-# rather than described, so the table and the deploy can never disagree.
+# copy table is §11 of docs/plan.md, and it is reproduced below as the code that
+# runs rather than as prose, so the table and the deploy can never disagree.
 #
 #   sudo ./install.sh              deploy
 #   sudo ./install.sh --dry-run    show what would change, touch nothing
@@ -45,6 +45,8 @@ MUSIC_USER="${MUSIC_USER:-music}"
 BEETS_DIR="${BEETS_DIR:-/srv/config/beets}"
 
 CHANGED=()
+CHANGED_UNITS=()
+ACTIVATABLE=()
 SYSTEMD_CHANGED=0
 UDEV_CHANGED=0
 TMPFILES=()
@@ -182,11 +184,27 @@ for plugin in "$REPO"/ingest/beets/plugins/*.py; do
   install_file "$plugin" "$BEETS_DIR/plugins/$(basename "$plugin")" 0644 "$MUSIC_USER:$MUSIC_USER" || true
 done
 
+# .timer is globbed alongside .service and .path even though no timer exists
+# yet, because lint (§6.6) and restic (§8) are both specced to ship one. A unit
+# type missing from this glob is not an error anywhere — the file simply never
+# reaches /etc/systemd/system, and a timer that was never deployed looks exactly
+# like a timer that never fired.
 say "systemd units:"
-for unit in "$REPO"/systemd/*.service "$REPO"/systemd/*.path; do
+for unit in "$REPO"/systemd/*.service "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
   [ -e "$unit" ] || continue
-  if install_file "$unit" "/etc/systemd/system/$(basename "$unit")" 0644 root:root; then
+  unit_name="$(basename "$unit")"
+
+  # .path and .timer units are triggers: they do nothing at all until enabled,
+  # so the deploy enables them below. .service units are not enabled here —
+  # autorip@.service is templated and started by udev, and inbox-import.service
+  # is started by its path unit. Enabling either would be wrong.
+  case "$unit_name" in
+    *.path|*.timer) ACTIVATABLE+=("$unit_name") ;;
+  esac
+
+  if install_file "$unit" "/etc/systemd/system/$unit_name" 0644 root:root; then
     SYSTEMD_CHANGED=1
+    CHANGED_UNITS+=("$unit_name")
   fi
 done
 
@@ -254,19 +272,22 @@ fi
 if [ "$SYSTEMD_CHANGED" -eq 1 ]; then
   say "reloading systemd"
   systemctl daemon-reload
-  # Restart the watcher so a changed unit takes effect now. Restarting a path
-  # unit only re-arms the watch; it does not start an import, and anything
-  # already in the inbox still triggers on the next change.
-  if systemctl is-enabled --quiet inbox.path 2>/dev/null; then
-    systemctl restart inbox.path
-    say "restarted inbox.path"
-  fi
 fi
 
-if ! systemctl is-enabled --quiet inbox.path 2>/dev/null; then
-  say "enabling inbox.path (the inbox watcher)"
-  systemctl enable --now inbox.path
-fi
+# Every trigger this repo ships gets enabled, and a changed one gets restarted
+# so the new version takes effect now rather than at the next boot. Restarting
+# a path unit only re-arms the watch — it does not start an import, and
+# anything already sitting in the inbox still triggers on the next change.
+for unit_name in "${ACTIVATABLE[@]:-}"; do
+  [ -n "$unit_name" ] || continue
+  if ! systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
+    say "enabling $unit_name"
+    systemctl enable --now "$unit_name"
+  elif printf '%s\n' "${CHANGED_UNITS[@]:-}" | grep -qxF "$unit_name"; then
+    systemctl restart "$unit_name"
+    say "restarted $unit_name (its unit file changed)"
+  fi
+done
 
 if [ "$UDEV_CHANGED" -eq 1 ]; then
   say "reloading udev"
