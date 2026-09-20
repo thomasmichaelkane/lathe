@@ -145,39 +145,39 @@ touches is under `/usr/local/bin` and `/etc`.
 
 ### docker-compose.yml
 
-```yaml
-services:
-  navidrome:
-    image: deluan/navidrome:latest
-    container_name: navidrome
-    restart: unless-stopped
-    user: "1001:1001"
-    ports:
-      - "4533:4533"
-    environment:
-      ND_MUSICFOLDER: /music
-      ND_DATAFOLDER: /data
-      ND_LOGLEVEL: info
-      ND_SCANSCHEDULE: "@every 6h"
-      ND_SESSIONTIMEOUT: 720h
-      ND_ENABLETRANSCODINGCONFIG: "true"
-      ND_DEFAULTTHEME: Dark
-    volumes:
-      - /srv/music:/music:ro
-      - /srv/config/navidrome:/data
+**The file is `compose/docker-compose.yml`. It is not reproduced here.**
 
-  librariand:
-    build: ./librariand
-    container_name: librariand
-    restart: unless-stopped
-    user: "1001:1001"
-    ports:
-      - "8080:8080"
-    environment:
-      NAVIDROME_URL: http://navidrome:4533
-    volumes:
-      - /srv:/srv
+It used to be, and that was a mistake of the same shape §11 warns about, only
+pointing the other way: two copies of one thing, and the prose copy is the one
+nobody re-reads. They had already drifted — this section still showed the
+`librariand` service live after the file had commented it out.
+
+Run it from the checkout:
+
+```sh
+docker compose -f compose/docker-compose.yml up -d
 ```
+
+Deliberately **not** an `install.sh` target. There is no deployed copy, so
+pulling the repo is the whole update, and Navidrome itself moves on its own
+axis with `docker compose pull && docker compose up -d`.
+
+What is worth stating here, because it is decision rather than syntax:
+
+- **Navidrome runs as uid 1001** (`music`), the same user that owns `/srv`.
+- **`/srv/music` is mounted read-only.** That is the enforcement of §4's rule
+  that nothing writes to the library except beets — not a convention, a mount
+  option.
+- **`librariand` is commented out until Phase 6.** It has `build: ./librariand`
+  and there is no Dockerfile, so leaving it live means `docker compose up`
+  fails on a fresh Pi for a service that does nothing yet.
+- **`ND_ENABLETRANSCODINGCONFIG` starts on and must be turned off** — see
+  below.
+- **`ND_SCANSCHEDULE` is 6h and `ND_SESSIONTIMEOUT` is 720h.** The first is a
+  backstop behind the filesystem watcher and the rescan poke `inbox-import.sh`
+  sends (§6.4) — it is the worst case for a new album appearing, not the
+  expected one. The second is long because the default logs you out
+  inconveniently often on mobile (§12).
 
 Deliberately **no reverse proxy in v1** — Tailscale handles access and there's no TLS to terminate on a tailnet. Add Caddy later only if you decide to expose it publicly.
 
@@ -1426,7 +1426,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 - Git repos initialised, `.gitignore` in place, licence chosen — **`deadwax` is GPL-3.0**; `lathe` stays unlicensed, since it's personal config with your paths in it and isn't for publishing
 - Settle the §13 open questions
 
-**Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `docker compose up`, rsync the collection into `/srv/inbox/` and let beets file it.
+**Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `sudo ./install.sh`, `docker compose up`, push the collection in with `push-music.sh` and let beets file it.
 
 **Blocked until hardware:** NVMe boot, and anything that actually touches
 `/dev/sr0` — abcde's real output layout, the MusicBrainz disc-ID lookup, the
@@ -1455,11 +1455,30 @@ paths with setgid inboxes — all of which are Phase 1.
 - Create `music` user (uid 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
 - **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
-- **Done when:** you can SSH in over Tailscale from your phone's hotspot
+- **Run `sudo ./install.sh`** (§11). It has to come after the `music` user and
+  the `/srv` tree, and it refuses to run before them. Nothing downstream works
+  without it: the beets config every import reads only reaches
+  `/srv/config/beets/config.yaml` by being deployed.
+- **Fill in `/etc/default/lathe`**, which `install.sh` has just created empty at
+  0600: `NTFY_URL` for phone pushes, and `NAVIDROME_URL`/`USER`/`PASS` once
+  Phase 1 has created the account. Both are optional — unset means that step is
+  skipped and logged, never that an import fails.
+- **Done when:** you can SSH in over Tailscale from your phone's hotspot, and
+  `sudo ./install.sh` reports nothing left to change
 
 ### Phase 1 — Serving music
 - `docker compose up` with Navidrome
-- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** rsync it to `/srv/inbox/`, then run the beets import over it. Beets is what places files in `/srv/music` — see §4. This is also the first real test of the §6.3 config at volume, so expect a meaningful quarantine pile on the first pass and budget an evening for working through it — `librariand/quarantine.py` (§6.5a) is the tool for that evening, and it needs neither `librariand` nor the optical drive.
+- **Migrate the existing collection through `/srv/inbox/`, not into `/srv/music`.** Beets is what places files in `/srv/music` — see §4.
+  **Stage into `/srv/staging/incoming/` and move across, or just run
+  `ingest/push-music.sh`, which does exactly that.** Do not rsync into
+  `/srv/inbox/` directly: the path unit fires on the first change, and this is
+  the largest copy this system will ever see, so it is the case §12 is about.
+  `inbox-import.sh` waits for the inbox to settle as a safety net, but the
+  staging move is the design and the settle wait is the net.
+  This is also the first real test of the §6.3 config at volume, so expect a
+  meaningful quarantine pile on the first pass and budget an evening for
+  working through it — `librariand/quarantine.py` (§6.5a) is the tool for that
+  evening, and it needs neither `librariand` nor the optical drive.
 - Create account, configure transcoding, connect ListenBrainz, then turn `ND_ENABLETRANSCODINGCONFIG` back off
 - **Done when:** music plays in a desktop browser and in a stock Subsonic client on your phone over Tailscale
 
@@ -1472,10 +1491,18 @@ paths with setgid inboxes — all of which are Phase 1.
 - **Done when:** one album has gone disc → library with correct tags and art
 
 ### Phase 3 — Automation
-- `/srv/inbox/` path unit + `inbox-import.sh` **first** — it is the consumer everything else feeds (settle wait, quarantine sweep, ntfy, Navidrome rescan poke)
-- `autorip.sh`, the systemd template unit, the udev rule
-- Per-disc logging, error detection, atomic hand-off into `/srv/inbox/`, auto-eject
-- `install.sh` — **written**. Copies the repo into the system paths, reloads systemd and udev. From here on it is the only way anything gets deployed; see the copy table in 11.
+Most of this phase is already written. What is left is the half that needs a
+drive, which is why the phase survives:
+
+- `inbox.path` + `inbox-import.sh` — **written and tested** (settle wait,
+  quarantine sweep, ntfy push, Navidrome rescan poke; `inbox-import-test.sh`).
+  Deployed by `install.sh` in Phase 0, so by here it is already running.
+- `autorip.sh`, `autorip@.service`, `99-autorip.rules`, per-disc JSON logging,
+  the atomic hand-off and auto-eject — **written, and unverified on hardware.**
+  `autorip-test.sh` covers everything downstream of the rip with the rip
+  stubbed. Verifying the rest is this phase's actual work.
+- `install.sh` — **written**, and by now the only way anything reaches a system
+  path. See the copy table in §11.
 - Verify the read-error grep patterns in `autorip.sh` against a **deliberately scratched disc**. `autorip-test.sh` stubs the rip, so a pattern that never matches is indistinguishable from a clean rip until a real bad disc proves otherwise.
 - `lint.py` (§6.6) + nightly timer
 - Rip a real multi-disc set one disc at a time, confirm both discs quarantine, and put them back together with `quarantine.py groups` → `merge` (§6.5a). This is the one path with no automated cover, and it is the path a box set takes every time.
@@ -1516,7 +1543,12 @@ which Phase 1 already provides.
 - **Verify the `inline` plugin's `multidisc` expression** before importing a box set, or you'll refile a lot of files twice.
 - **`strong_rec_thresh` is a distance, not a confidence.** Raising it loosens matching. Default 0.04, lower is stricter.
 - **Never rsync music directly into `/srv/music`.** It bypasses beets, so those albums are invisible to `library.db` and `incremental: yes` will never revisit them. Everything enters via `/srv/inbox/`.
-- **Never edit a deployed copy.** `/usr/local/bin/autorip.sh`, `/etc/abcde.conf` and the systemd units are all copies of files in this repo. Editing them in place works, which is the problem: the repo silently stops describing the running system, and the next deploy reverts the fix without warning. Edit here, deploy from here — see §11.
+- **Never edit a deployed copy.** `/usr/local/bin/autorip.sh`,
+  `/usr/local/bin/inbox-import.sh`, `/etc/abcde.conf`, the systemd units and
+  the udev rule are all copies of files in this repo — and so are
+  `/srv/config/beets/config.yaml` and `/srv/config/beets/plugins/*.py`, which
+  are the easiest two to forget, because they sit on the library drive where
+  you are already working rather than off in `/etc`. Editing them in place works, which is the problem: the repo silently stops describing the running system, and the next deploy reverts the fix without warning. Edit here, deploy from here — see §11.
 - **Never let `autorip.sh` run beets itself.** The disc ID makes the match easy and inlining the import is tempting, but it duplicates `inbox-import.sh`'s settle wait, quarantine sweep and cleanup, and leaves two beets invocations to drift apart. Rip, move into `/srv/inbox/`, stop.
 - **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
