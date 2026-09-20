@@ -154,47 +154,31 @@ comes out different, the container writes files the services cannot read.
 
 ---
 
-## 6. Create the `/srv` tree — *after* mounting, not before
+## 6. Add yourself to the `music` group
 
 ```sh
-findmnt /srv || echo "STOP: /srv is not mounted"
-
-sudo mkdir -p /srv/music /srv/quarantine /srv/inbox
-sudo mkdir -p /srv/staging/rips /srv/staging/fetched /srv/staging/incoming
-sudo mkdir -p /srv/config/navidrome /srv/config/beets /srv/config/librariand
-sudo mkdir -p /srv/logs/rips
-```
-
-Order matters and the failure is silent. Build the tree first and mount over it
-and the directories are still *there* — on the microSD, hidden underneath the
-mount, invisible and slowly filling the boot media. Everything looks correct
-until the SD card runs out of space.
-
----
-
-## 7. Ownership and the setgid bits
-
-```sh
-sudo chown -R music:music /srv
-sudo chmod 755 /srv
-
 sudo usermod -aG music tom
-sudo chmod 2775 /srv/inbox /srv/staging/incoming
 
-ls -ld /srv/inbox /srv/staging/incoming    # expect drwxrwsr-x ... music music
+# log out and back in, then:
+id -nG                                 # must include: music
 ```
 
-The `s` in `drwxrwsr-x` is the setgid bit, and it is the whole point: you upload
-as `tom`, beets runs as `music` and has to **move and delete** those files, not
-just read them. Without this, every upload fails at import time rather than at
-copy time — a confusing place to find out.
+**Why you need it.** You upload as `tom`; beets runs as `music` and has to
+**move and delete** those files, not merely read them. The matching half — the
+setgid bits on `inbox/` and `staging/incoming/`, which make an uploaded file
+group-owned by `music` in the first place — is applied by `install.sh` in step 9,
+along with the directories themselves.
 
-**Log out and back in** before testing, or your shell still has the old group
-list. `id -nG` should include `music`.
+This is the one piece of Phase 0 `install.sh` deliberately does not do: which
+groups a human account belongs to is your business, not a deploy script's.
+
+**You must log out and back in.** Group membership is baked into your session at
+login; until you reconnect, your shell still has the old list and any test you
+run will fail confusingly.
 
 ---
 
-## 8. Docker
+## 7. Docker
 
 ```sh
 curl -fsSL https://get.docker.com | sudo sh
@@ -206,7 +190,7 @@ docker compose version
 
 ---
 
-## 9. Tailscale
+## 8. Tailscale
 
 ```sh
 curl -fsSL https://tailscale.com/install.sh | sudo sh
@@ -216,7 +200,7 @@ tailscale ip -4
 
 ---
 
-## 10. Clone and deploy
+## 9. Clone and deploy
 
 ```sh
 sudo apt install -y git
@@ -226,6 +210,15 @@ cd ~/lathe
 sudo ./install.sh --dry-run            # read this before running it for real
 sudo ./install.sh
 ```
+
+**This also builds the `/srv` tree** — the §4 directories, owned by `music`,
+with setgid on `inbox/` and `staging/incoming/`. It is idempotent, so re-running
+it later is free.
+
+**It will refuse to run if `/srv` is not a mount point.** That is deliberate:
+`nofail` in your fstab means "booted fine, drive absent" is an ordinary state,
+and deploying in it would write the beets config onto the microSD underneath
+the mountpoint, where the drive hides it the moment it returns.
 
 From here on, **`install.sh` is the only thing that writes to a system path**
 (§11, §12). Never edit a deployed copy — edit here and re-run.
@@ -238,7 +231,7 @@ cd ~/lathe && git pull && sudo ./install.sh
 
 ---
 
-## 11. Fill in `/etc/default/lathe`
+## 10. Fill in `/etc/default/lathe`
 
 `install.sh` just created it, empty, 0600, root-owned.
 
@@ -253,12 +246,12 @@ fails.
 
 ---
 
-## 12. Done when
+## 11. Done when
 
 ```sh
 findmnt /srv                           # mounted, from the UUID entry
 id music                               # 1948:1948
-ls -ld /srv/inbox                      # drwxrwsr-x, music:music
+ls -ld /srv/inbox                      # drwxrwsr-x, music:music (set by install.sh)
 systemctl is-enabled inbox.path        # enabled
 sudo ./install.sh --dry-run            # "0 file(s) would change"
 ```

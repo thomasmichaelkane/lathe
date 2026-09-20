@@ -1296,6 +1296,17 @@ failure that is silent:
   EOF while looking for matching '"'`, the rename case finishes cleanly on the
   old version. The script also refuses to deploy while an ingest unit is active;
   `--force` skips that check, and is safe precisely because of the rename.
+- **It refuses to deploy unless `/srv` is a mount point.** `-d` is not enough:
+  `/srv` exists on stock Debian whether or not the drive is mounted, and
+  `nofail` makes "booted fine, drive absent" an ordinary state rather than an
+  obvious emergency. Deploying then would write the beets config onto the boot
+  media *underneath* the mountpoint, where the drive hides it the moment it
+  returns, and every later import would read a file that is not there.
+- **It creates the §4 tree** and sets the setgid bits on `inbox/` and
+  `staging/incoming/`, idempotently. The scripts it deploys cannot run without
+  those directories, and a hand-typed `staging/incomming` looks right in a
+  terminal and silently breaks `push-music.sh` a week later. Group membership
+  for human accounts stays manual.
 - **It re-checks that `/srv/inbox` and `/srv/staging` share a filesystem.**
   Nothing else does, and if a remount ever splits them the atomic hand-off
   quietly becomes copy-then-delete — §12.
@@ -1473,12 +1484,13 @@ happens when one thing is written down twice.
 
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
-- Create `music` user (**uid and gid 1948** — §4 explains why not 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
-- **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
+- Create `music` user (**uid and gid 1948** — §4 explains why not 1001), and mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4). The `/srv` tree itself is created by `install.sh` below, not by hand.
+- **Add your own user to the `music` group** (`sudo usermod -aG music tom`, then log out and back in). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. The matching setgid bits on `/srv/inbox` and `/srv/staging/incoming` are applied by `install.sh`; the group membership is not, because which groups a human account belongs to is not a deploy script's business. Skipping it makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
 - **Run `sudo ./install.sh`** (§11). It has to come after the `music` user and
-  the `/srv` tree, and it refuses to run before them. Nothing downstream works
-  without it: the beets config every import reads only reaches
+  the mount, and refuses to run before either. It creates the §4 tree, sets the
+  setgid bits, and deploys everything in the copy table. Nothing downstream
+  works without it: the beets config every import reads only reaches
   `/srv/config/beets/config.yaml` by being deployed.
 - **Fill in `/etc/default/lathe`**, which `install.sh` has just created empty at
   0600: `NTFY_URL` for phone pushes, and `NAVIDROME_URL`/`USER`/`PASS` once
