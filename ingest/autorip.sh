@@ -96,7 +96,7 @@ JSON_LOG="$RIP_LOGS/$DISCID.json"
 
 # Write the structured log from Python rather than assembling JSON in bash.
 # Album and artist names contain quotes, backslashes and non-ASCII often enough
-# that hand-rolled escaping would eventually emit something libraryd can't
+# that hand-rolled escaping would eventually emit something librariand can't
 # parse — and it would do it on the one disc you care about.
 write_json_log() {
   RL_DISCID="$DISCID" \
@@ -121,7 +121,7 @@ out = {
                     .isoformat().replace("+00:00", "Z"),
     "status": os.environ["RL_STATUS"],
     "detail": os.environ["RL_DETAIL"] or None,
-    # Where the album was moved to. libraryd correlates a rip with its import
+    # Where the album was moved to. librariand correlates a rip with its import
     # outcome by checking whether this name is still sitting in
     # /srv/quarantine — the ripper hands off before beets runs, so it cannot
     # know the outcome itself. See §10 of docs/plan.md.

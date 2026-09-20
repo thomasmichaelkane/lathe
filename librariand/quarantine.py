@@ -21,7 +21,7 @@ otherwise is (§6.3a). `merge` is the repair: it restacks the discs into the
 Album/CD1, Album/CD2 layout beets collapses into a single import task, and
 moves that back into the inbox where the normal pipeline takes it from there.
 
-This is a library as much as a CLI — libraryd's /quarantine endpoints (§10)
+This is a library as much as a CLI — librariand's /quarantine endpoints (§10)
 import these functions rather than shelling out to them.
 """
 
