@@ -141,15 +141,15 @@ Finding out that an fstab entry is wrong is much better now than in a month.
 ## 5. Create the `music` user
 
 ```sh
-sudo groupadd -g 1001 music
-sudo useradd -u 1001 -g 1001 --system --no-create-home \
+sudo groupadd -g 1948 music
+sudo useradd -u 1948 -g 1948 --system --no-create-home \
      --home-dir /srv --shell /usr/sbin/nologin music
 
-id music                               # expect uid=1001(music) gid=1001(music)
+id music                               # expect uid=1948(music) gid=1948(music)
 ```
 
 **The numbers are load-bearing.** `compose/docker-compose.yml` runs Navidrome as
-`user: "1001:1001"` and the systemd units run as `music`. If the uid or gid
+`user: "1948:1948"` and the systemd units run as `music`. If the uid or gid
 comes out different, the container writes files the services cannot read.
 
 ---
@@ -257,7 +257,7 @@ fails.
 
 ```sh
 findmnt /srv                           # mounted, from the UUID entry
-id music                               # 1001:1001
+id music                               # 1948:1948
 ls -ld /srv/inbox                      # drwxrwsr-x, music:music
 systemctl is-enabled inbox.path        # enabled
 sudo ./install.sh --dry-run            # "0 file(s) would change"

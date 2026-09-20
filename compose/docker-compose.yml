@@ -22,7 +22,7 @@ services:
     # The `music` user (Phase 0) owns all of /srv. Navidrome runs as it rather
     # than root so the one writable mount below can't be used to write anything
     # root-owned into the library drive.
-    user: "1001:1001"
+    user: "1948:1948"
 
     ports:
       - "4533:4533"
@@ -71,7 +71,7 @@ services:
 #     build: ./librariand
 #     container_name: librariand
 #     restart: unless-stopped
-#     user: "1001:1001"
+#     user: "1948:1948"
 #     ports:
 #       - "8080:8080"
 #     environment:

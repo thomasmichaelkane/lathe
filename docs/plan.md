@@ -118,7 +118,22 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
 
 This rule has no exceptions, including the initial migration. The existing collection enters through `/srv/inbox/` and is imported by beets like anything else — it is never rsynced straight into `/srv/music`. Copying it in directly would leave those albums absent from beets' `library.db`, which means `incremental: yes` skips them forever, they never conform to the §6.3 path templates, and the library is inconsistent from day one. See Phase 1 in §11.
 
-Create a dedicated `music` user (uid 1001) owning all of `/srv`. Run containers and the rip service as that user.
+Create a dedicated `music` user (**uid and gid 1948**) owning all of `/srv`.
+Run containers and the rip service as that user.
+
+**Why 1948 and not the next free number.** The original plan said 1001, which
+turned out to be taken on Pi OS — `lpadmin`, the stock printer-admin group,
+holds gid 1001. Rather than shuffle to 1002, the pair is 1948: the year
+Columbia introduced the 33⅓ rpm microgroove LP. Beyond the joke it is a real
+debugging aid, because **only numbers cross the container boundary** — inside
+Navidrome's container there is no `music` user, just a uid writing files. When
+`ls -n` or a container log shows `1948` you know instantly whose it is, where
+`1002` could be any account the system invented. Nothing else in the 1000-59999
+range will reach it: `adduser` allocates upwards from 1000.
+
+This is not a thematic infrastructure *name* and does not conflict with §14 —
+the account is still called `music`, which is what you read in
+`systemctl status`.
 
 **The library drive is mounted at `/srv` as a whole — settled 2026-09-20 — not
 at `/srv/music`.** Three reasons, in order of how expensive getting it wrong
@@ -164,7 +179,7 @@ axis with `docker compose pull && docker compose up -d`.
 
 What is worth stating here, because it is decision rather than syntax:
 
-- **Navidrome runs as uid 1001** (`music`), the same user that owns `/srv`.
+- **Navidrome runs as uid 1948** (`music`), the same user that owns `/srv` — see §4 for why that number.
 - **`/srv/music` is mounted read-only.** That is the enforcement of §4's rule
   that nothing writes to the library except beets — not a convention, a mount
   option.
@@ -1458,7 +1473,7 @@ happens when one thing is written down twice.
 
 - Flash Pi OS Lite 64-bit to microSD, boot, update
 - Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
-- Create `music` user (uid 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
+- Create `music` user (**uid and gid 1948** — §4 explains why not 1001), mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4), then create the `/srv` tree on it
 - **Add your own user to the `music` group, and make `/srv/staging/incoming` and `/srv/inbox` setgid** (`chgrp music`, `chmod 2775`). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. Skipping this makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
 - **Run `sudo ./install.sh`** (§11). It has to come after the `music` user and
