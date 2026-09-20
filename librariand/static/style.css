@@ -24,6 +24,7 @@
   --alarm:     #ff3b30;   /* failures, destructive actions */
   --warn:      #ffa726;   /* needs a look, not broken */
   --ok:        #4ade80;
+  --info:      #5b9cf8;   /* nothing obviously wrong, still unmatched */
 
   --gap: 16px;
 }
@@ -115,6 +116,7 @@ h2.section:first-child { margin-top: 4px; }
 .card.warn   { border-left-color: var(--warn); }
 .card.good   { border-left-color: var(--ok); }
 .card.live   { border-left-color: var(--acid); }
+.card.info   { border-left-color: var(--info); }
 
 .card h3 {
   margin: 0 0 3px;
@@ -201,6 +203,12 @@ input:focus { outline: 2px solid var(--acid); outline-offset: -2px; }
 .pill.warn  { color: var(--warn);  border-color: #5a4320; }
 .pill.ok    { color: var(--ok);    border-color: #1f5133; }
 .pill.acid  { color: #000; background: var(--acid); border-color: var(--acid); }
+.pill.live  { color: var(--acid); border-color: #5a5f20; }
+.pill.info  { color: var(--info); border-color: #24406a; }
+
+a.tile { display: block; }
+a.tile:hover { background: var(--raised); text-decoration: none; }
+a.tile .n, a.tile .k { color: inherit; }
 
 .empty {
   padding: 40px var(--gap); text-align: center;

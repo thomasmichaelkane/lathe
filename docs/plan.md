@@ -1241,9 +1241,21 @@ calls low priority.
 
 **On `/rips`:** rip history comes from `/srv/logs/rips/`, which records the rip
 and nothing after it — the ripper hands off before the import happens (§6.2), so
-it cannot know the outcome. Each disc log carries `handoff_path`; `librariand`
-resolves final status by checking whether that name is still sitting in
-`/srv/quarantine/`.
+it cannot know where the album ended up. **`librariand` does not try to work it
+out either**, and that is a deliberate reversal: an earlier build derived the
+outcome from whether `handoff_path` was still sitting in the inbox or in
+quarantine, and it was wrong to.
+
+The useful half was already better served elsewhere — an album beets would not
+match is on the quarantine page, which is where the actions are. The rest was
+an inference from *absence*: "in neither, therefore imported" holds until you
+delete something from quarantine by hand, at which point a months-old rip log
+quietly starts claiming an album reached the library. A log that revises the
+past is worse than one that says less.
+
+So `/rips` answers only what the log records: the disc read, or it failed and
+here is why, plus whether there were read errors — which mean *consider a
+re-rip* even on a disc that passed.
 
 Ship a minimal web dashboard on the same service — this is the actual UI for quarantine review and lint violations, and it works from any browser, so it doesn't need to live in the Android app.
 

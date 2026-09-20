@@ -74,7 +74,7 @@ def health() -> dict:
     last_ok = next((r for r in all_rips if r.status == "ok"), None)
     out["last_successful_rip"] = (
         {"disc_id": last_ok.disc_id, "at": last_ok.finished_at,
-         "album": last_ok.album, "outcome": last_ok.outcome}
+         "album": last_ok.album, "artist": last_ok.artist}
         if last_ok else None
     )
     out["rips_needing_attention"] = sum(1 for r in all_rips if r.needs_attention)

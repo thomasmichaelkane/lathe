@@ -242,7 +242,9 @@ def run_checks(client, auth, srv: Path):
     check("counts quarantine entries", h["pending"]["quarantine"], 4)
     check("counts fetched awaiting review", h["pending"]["fetched"], 3)
     check("counts the inbox", h["pending"]["inbox"], 1)
-    check("counts rips needing attention", h["rips_needing_attention"], 3)
+    # The failed rip and the one with read errors. A rip that quarantined
+    # is no longer counted here — that is Quarantine's business now.
+    check("counts rips needing attention", h["rips_needing_attention"], 2)
     truthy("names the last successful rip", h["last_successful_rip"] is not None)
 
     section("stats")
@@ -345,26 +347,58 @@ def run_checks(client, auth, srv: Path):
     data = client.get("/rips", headers=auth).json()
     rs = {r["disc_id"]: r for r in data["entries"]}
     check("history is complete", len(rs), 5)
-    check("an album in neither inbox nor quarantine reads as imported",
-          rs["discid1"]["outcome"], "imported")
-    check("an album still in the inbox reads as awaiting import",
-          rs["discid4"]["outcome"], "awaiting import")
-    check("a failed rip reads as failed", rs["discid3"]["outcome"], "rip failed")
+
+    # A rip log reports the rip and nothing else. Where the album ended up is
+    # Quarantine's question, and an inference from absence here degraded over
+    # time — see the rips.py docstring.
+    truthy("a clean rip reports passed", rs["discid1"]["passed"])
+    check("and nothing about where the album went",
+          "outcome" in rs["discid1"], False)
+    check("a failed rip reports failed", rs["discid3"]["passed"], False)
+    truthy("with the reason", "abcde exited" in (rs["discid3"]["detail"] or ""))
     truthy("read errors are flagged", rs["discid5"]["read_errors"])
-    truthy("and count as needing attention", rs["discid5"]["needs_attention"])
+    truthy("and count as needing attention even on a rip that passed",
+           rs["discid5"]["passed"] and rs["discid5"]["needs_attention"])
+    check("a clean rip needs no attention", rs["discid1"]["needs_attention"], False)
     check("no rip is in progress", data["current"], None)
 
+    page = client.get("/ui/rips", headers=auth)
+    truthy("the log shows pass/fail", "passed" in page.text and "failed" in page.text)
+    truthy("and no inbox/quarantine state", "in the inbox" not in page.text.lower())
+
+    # The API keeps /eject — it is in §10, and a POST with a token is a
+    # deliberate act. The dashboard deliberately does NOT offer a button: a
+    # tray opened by a mis-tap on a phone stays open, with the disc exposed,
+    # until someone walks over to it.
     r = client.post("/eject", headers=auth, json={"device": "sr0"}).json()
-    truthy("eject works when idle", r["ok"])
+    truthy("the eject endpoint still works", r["ok"])
+    for path in ("/", "/ui/rips"):
+        truthy(f"but {path} offers no eject button",
+               'data-action="eject"' not in client.get(path, headers=auth).text)
     check("an invalid device is refused",
           client.post("/eject", headers=auth,
                       json={"device": "../sda"}).json()["ok"], False)
 
+    section("inbox")
+    # Three by now, and not by accident: the fixture's own "Waiting Album",
+    # plus the entry retry() put back and the download approve() moved in.
+    # That those two actions really land here is the point.
+    items = client.get("/inbox", headers=auth).json()["entries"]
+    names = {i["name"] for i in items}
+    check("lists everything waiting to import", len(items), 3)
+    truthy("including the fixture's own", "Waiting Album" in names)
+    truthy("the entry retry() handed back", "Thornley - Easy.flac" in names)
+    truthy("and the download approve() moved in",
+           "20260819T142305Z-clean" in names)
+    truthy("nothing just-arrived counts as stuck",
+           not any(i["stale"] for i in items))
+
     section("the dashboard renders")
     for path, needle in [("/", "librariand"),
                          ("/ui/quarantine", "Quarantine"),
-                         ("/ui/fetched", "review"),
-                         ("/ui/rips", "History")]:
+                         ("/ui/fetched", "Approve"),
+                         ("/ui/inbox", "Inbox"),
+                         ("/ui/rips", "Result")]:
         resp = client.get(path, headers=auth)
         check(f"{path} returns 200", resp.status_code, 200)
         truthy(f"{path} contains its content", needle.lower() in resp.text.lower())
@@ -372,6 +406,20 @@ def run_checks(client, auth, srv: Path):
     resp = client.get("/ui/quarantine", headers=auth)
     truthy("quarantine page offers a resolve field", 'data-action="resolve"' in resp.text)
     truthy("and the nav carries live counts", 'class="count' in resp.text)
+    # One flat list: no group section heading, and the merge action rides on
+    # the member cards instead.
+    truthy("the list is flat, with no group subsection",
+           "Looks like one release" not in resp.text)
+    truthy("a mergeable set still offers merge", 'data-action="merge"' in resp.text)
+    truthy("issues are colour-coded", 'class="card live"' in resp.text
+           or 'class="card warn"' in resp.text)
+
+    over = client.get("/", headers=auth)
+    truthy("the overview calls the section Pipeline", ">Pipeline<" in over.text)
+    truthy("and the drive section Optical drive", "Optical drive" in over.text)
+    truthy("with tiles named after the tabs", ">Fetched<" in over.text and ">Ripped<" in over.text)
+    truthy("and no top-artists table", "Most albums" not in over.text)
+    truthy("the inbox tab is present", '/ui/inbox' in over.text)
     truthy("static assets are served", client.get("/static/style.css").status_code == 200)
 
     section("no-token mode")
@@ -383,7 +431,12 @@ def run_checks(client, auth, srv: Path):
     check("with no token set, the API is open", open_client.get("/health").status_code, 200)
     page = open_client.get("/")
     check("and pages load without logging in", page.status_code, 200)
-    truthy("but the dashboard says so", "No token set" in page.text)
+    truthy("the overview says so", "No token set" in page.text)
+    # Banners are overview-only. Repeated on every tab, a warning stops being
+    # read by the third page.
+    for path in ("/ui/quarantine", "/ui/fetched", "/ui/inbox", "/ui/rips"):
+        truthy(f"but {path} does not repeat it",
+               "No token set" not in open_client.get(path).text)
     os.environ["LIBRARIAND_TOKEN"] = TOKEN
 
 

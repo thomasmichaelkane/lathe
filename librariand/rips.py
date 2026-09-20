@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
-"""Rip history, and the one thing the ripper cannot tell you itself.
+"""Rip history — did the disc read, and if not, why.
 
 `autorip.sh` writes one JSON log per disc into /srv/logs/rips, named by
-MusicBrainz disc ID. That log records **the rip and nothing after it**: the
-ripper is a producer, it moves the album into /srv/inbox and stops, and beets
-runs later in a different process (§6.2, §12). So a rip log saying `status:
-"ok"` means the disc read cleanly, not that the album is in your library.
+MusicBrainz disc ID. That log records the rip and nothing after it: the ripper
+is a producer, it moves the album into /srv/inbox and stops, and beets runs
+later in a different process (§6.2, §12).
 
-Resolving the rest is this module's job, and §10 specifies how: each log
-carries `handoff_path`, the name the album was moved in under. Where that name
-has ended up says what happened to it.
+**This module reports only what the log records.** An earlier version also
+derived where the album ended up, by checking whether `handoff_path` was still
+sitting in the inbox or in quarantine. That is dropped, for two reasons:
 
-    still in /srv/inbox      -> not imported yet; the path unit will get to it
-    now in /srv/quarantine   -> beets saw it and would not match it
-    in neither               -> imported; beets moved it into /srv/music
+  1. The interesting case was already better served elsewhere. An album beets
+     would not match appears on the Quarantine page, with its rip log attached
+     — that is the page with the actions on it, and duplicating the fact here
+     just invited you to look in the wrong place.
 
-That last one is an inference rather than a fact, and it is worth being honest
-about which is which. Nothing writes "this rip was imported" anywhere, because
-nothing is in a position to: the ripper has exited and beets does not know a
-rip happened. The alternative would be a shared database between two things
-that currently share only a directory, which §14 is explicit about not doing.
+  2. The rest of it was an inference from ABSENCE, and it degraded. "In
+     neither, therefore imported" is true right up until you delete something
+     from quarantine by hand, at which point a months-old rip log silently
+     starts claiming an album reached the library. A log that changes its mind
+     about the past is worse than one that says less.
+
+So: a rip passed or it failed, and if it failed there is a reason. Read errors
+are reported alongside because they are also a recorded fact about the disc,
+and they mean "consider a re-rip" whether or not the rip itself succeeded.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from quarantine import INBOX, QUARANTINE, RIP_LOGS
+from quarantine import RIP_LOGS
 
 # Where abcde works before the hand-off. A directory here with no matching
 # finished log is a rip that is either running or died without writing one.
@@ -63,45 +67,17 @@ class Rip:
     raw_log: str | None = None
     schema: int | None = None
 
-    # Derived here, not recorded anywhere. See the module docstring.
-    outcome: str = "unknown"         # imported | awaiting import | quarantined
-                                     # | rip failed | unknown
-    quarantine_entry: str | None = None
     readable: bool = True
     problem: str | None = None
 
     @property
+    def passed(self) -> bool:
+        return self.status == "ok"
+
+    @property
     def needs_attention(self) -> bool:
-        return self.status != "ok" or self.read_errors or self.outcome == "quarantined"
-
-
-def _handoff_name(rip: Rip) -> str | None:
-    if not rip.handoff_path:
-        return None
-    return Path(rip.handoff_path).name
-
-
-def _resolve_outcome(rip: Rip) -> None:
-    """Work out where the album ended up. See the module docstring."""
-    if rip.status != "ok":
-        rip.outcome = "rip failed"
-        return
-
-    name = _handoff_name(rip)
-    if not name:
-        # 'ok' with no hand-off path should not happen; autorip.sh only writes
-        # 'ok' after the move succeeds. Say so rather than guessing.
-        rip.outcome = "unknown"
-        return
-
-    if (INBOX / name).exists():
-        rip.outcome = "awaiting import"
-        return
-    if (QUARANTINE / name).exists():
-        rip.outcome = "quarantined"
-        rip.quarantine_entry = name
-        return
-    rip.outcome = "imported"
+        """Failed, or read badly enough to be worth re-ripping."""
+        return self.status != "ok" or self.read_errors
 
 
 def _read_one(p: Path) -> Rip:
@@ -133,7 +109,6 @@ def _read_one(p: Path) -> Rip:
         raw_log=data.get("raw_log"),
         schema=schema,
     )
-    _resolve_outcome(rip)
     return rip
 
 

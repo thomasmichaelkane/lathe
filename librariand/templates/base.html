@@ -24,19 +24,15 @@
       <span class="count {{ 'zero' if not counts.quarantine }}">{{ counts.quarantine }}</span></a>
     <a href="/ui/fetched"    class="{{ 'on' if nav == 'fetched' }}">Fetched
       <span class="count {{ 'zero' if not counts.fetched }}">{{ counts.fetched }}</span></a>
+    <a href="/ui/inbox"      class="{{ 'on' if nav == 'inbox' }}">Inbox
+      <span class="count {{ 'zero' if not counts.inbox }}">{{ counts.inbox }}</span></a>
     <a href="/ui/rips"       class="{{ 'on' if nav == 'rips' }}">Rips</a>
   </nav>
 </header>
 
 <main>
-  {% if no_auth %}
-  <div class="banner">
-    <strong>No token set.</strong> Anyone who can reach this machine on the
-    tailnet can approve, merge and delete. Set <code>LIBRARIAND_TOKEN</code> in
-    <code>/etc/default/lathe</code> and restart <code>librariand</code>.
-  </div>
-  {% endif %}
-
+  {# Banners live on the overview only. A warning repeated on every tab stops
+     being read by the third page, and none of these are page-specific. #}
   {% block body %}{% endblock %}
 </main>
 

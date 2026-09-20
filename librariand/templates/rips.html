@@ -6,34 +6,22 @@
 {% if current %}
 <div class="card live">
   <h3>Ripping now — {{ current.device }}</h3>
-  <div class="meta">
-    <span class="mono">{{ current.unit }}</span>
-    {% if current.working_dir %}<span class="mono">{{ current.working_dir }}</span>{% endif %}
-  </div>
-  <div class="why">
-    Leave the tray shut. <code>autorip.sh</code> ejects by itself once the album
-    has been handed to the inbox — an eject before that point loses the rip.
-  </div>
-</div>
-{% else %}
-<div class="actions" style="margin-bottom:18px;">
-  <button data-action="eject" data-device="sr0">Eject tray</button>
+  <div class="meta"><span class="mono">{{ current.unit }}</span></div>
+  <div class="why">Leave the tray shut — it ejects itself when done.</div>
 </div>
 {% endif %}
-
-<h2 class="section">History ({{ entries|length }})</h2>
 
 {% if not entries %}
 <div class="empty">
   <strong>No rips yet.</strong>
-  Each disc writes one JSON log to <code>/srv/logs/rips</code>, named by
-  MusicBrainz disc ID. Put a CD in and it appears here.
+  Each disc writes one log to <code>/srv/logs/rips</code>, named by MusicBrainz
+  disc ID. Put a CD in and it appears here.
 </div>
 {% else %}
 
 <table class="log">
   <thead>
-    <tr><th>Disc</th><th>Outcome</th><th>When</th></tr>
+    <tr><th>Disc</th><th>Result</th><th>When</th></tr>
   </thead>
   <tbody>
   {% for r in entries %}
@@ -41,36 +29,20 @@
       <td>
         <strong>{{ r.album or r.disc_id }}</strong>
         {% if r.artist %}<br><span style="color:var(--ink-dim);">{{ r.artist }}</span>{% endif %}
-        {% if r.track_count %}<br><span style="color:var(--ink-faint);font-size:12px;">{{ r.track_count }} tracks</span>{% endif %}
       </td>
       <td>
-        {% if r.outcome == 'imported' %}<span class="pill ok">imported</span>
-        {% elif r.outcome == 'quarantined' %}<span class="pill warn">quarantined</span>
-        {% elif r.outcome == 'rip failed' %}<span class="pill alarm">rip failed</span>
-        {% elif r.outcome == 'awaiting import' %}<span class="pill acid">in the inbox</span>
-        {% else %}<span class="pill">{{ r.outcome }}</span>{% endif %}
-        {% if r.read_errors %}<br><span class="pill alarm" style="margin-top:4px;">read errors</span>{% endif %}
+        {% if r.passed %}<span class="pill ok">passed</span>
+        {% else %}<span class="pill alarm">failed</span>{% endif %}
+        {% if r.read_errors %} <span class="pill warn">read errors</span>{% endif %}
         {% if r.detail %}<br><span style="color:var(--ink-dim);font-size:12px;">{{ r.detail }}</span>{% endif %}
-        {% if r.outcome == 'quarantined' %}
-          <br><a href="/ui/quarantine" style="font-size:12px;">review it →</a>
-        {% endif %}
       </td>
       <td style="color:var(--ink-dim);white-space:nowrap;">
-        {{ (r.finished_at or '')[:16]|replace('T', ' ') }}
+        {{ (r.finished_at or '')[:10] }}
       </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
-
-<p style="color:var(--ink-faint);font-size:12.5px;margin-top:20px;">
-  A rip log records the rip and nothing after it — the ripper hands the album to
-  the inbox and exits well before beets runs. So the outcome above is worked out
-  by looking for where the album ended up:
-  still in the inbox, sitting in quarantine, or in neither, which means beets
-  filed it. <strong style="color:var(--ink-dim);">A clean rip is not the same as
-  an album in your library.</strong>
-</p>
 {% endif %}
 
 {% endblock %}

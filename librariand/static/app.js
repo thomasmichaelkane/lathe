@@ -95,9 +95,6 @@ document.addEventListener("click", (ev) => {
     case "reject":
       if (!confirm(`Reject "${a.name}"?\n\nThe download is deleted from disk.`)) return;
       return act(btn, "POST", `/fetched/${name}/reject`, undefined, "rejected");
-
-    case "eject":
-      return act(btn, "POST", "/eject", { device: a.device || "sr0" }, "tray open");
   }
 });
 

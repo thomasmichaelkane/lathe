@@ -36,6 +36,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 import fetched
+import inbox as inbox_mod
 import quarantine
 import resolve as resolve_mod
 import rips
@@ -226,10 +227,19 @@ async def api_reject(fetch_id: str, dry_run: bool = False):
         return _fail(exc)
 
 
+@app.get("/inbox", dependencies=[Depends(require_api)])
+async def api_inbox():
+    return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
+
+
 @app.get("/rips", dependencies=[Depends(require_api)])
 async def api_rips():
+    # `passed` and `needs_attention` are properties, so asdict() does not carry
+    # them. They are the two things a caller actually wants, so add them rather
+    # than making every client re-derive them from `status` and `read_errors`.
     return {"current": rips.current(),
-            "entries": [asdict(r) | {"needs_attention": r.needs_attention}
+            "entries": [asdict(r) | {"passed": r.passed,
+                                     "needs_attention": r.needs_attention}
                         for r in rips.entries()]}
 
 
@@ -261,13 +271,65 @@ async def ui_index(request: Request):
                  nav="overview")
 
 
+# One card per entry, colour-coded by what is actually wrong with it. The
+# categories are derived from the notes quarantine.py already produces rather
+# than recomputed here — there is one place that decides why an album is stuck
+# and it is not this file.
+#
+# Ordered most-actionable first. That is not a subsection, it is a sort: a pile
+# of thirty is triaged by working down it, and "damaged" wants a different
+# decision from "no match".
+_ISSUES = [
+    # (substring in the notes, css class, label, rank)
+    ("no audio files",  "alarm", "damaged",          0),
+    ("read errors",     "alarm", "read errors",      0),
+    ("retry, not merge", "live", "whole set, one folder", 1),
+    ("needs merging",   "live",  "part of a set",    1),
+    ("part of a set",   "live",  "part of a set",    1),
+    ("in one folder",   "live",  "part of a set",    1),
+    ("loose file",      "warn",  "loose file",       2),
+    ("no album tag",    "warn",  "no album tag",     2),
+    ("tracks present",  "warn",  "missing tracks",   3),
+]
+
+
+def _issue(entry) -> tuple[str, str, int]:
+    notes = " ".join(entry.notes).lower()
+    for needle, css, label, rank in _ISSUES:
+        if needle in notes:
+            return css, label, rank
+    return "info", "no match", 4
+
+
 @app.get("/ui/quarantine", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
 async def ui_quarantine(request: Request):
-    return _page(request, "quarantine.html",
-                 entries=quarantine.entries(),
-                 groups=quarantine.groups(online=False),
-                 nav="quarantine")
+    # Merge acts on a whole set, so each member card carries the action for its
+    # group. Keeps the list flat without losing the one operation that needs to
+    # know about more than one entry at a time.
+    group_of: dict = {}
+    for g in quarantine.groups(online=False):
+        if g.mergeable and g.complete:
+            for member in g.members:
+                group_of[member] = g
+
+    cards = []
+    for e in quarantine.entries():
+        css, label, rank = _issue(e)
+        cards.append({"e": e, "css": css, "label": label, "rank": rank,
+                      "group": group_of.get(e.name)})
+    cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
+
+    return _page(request, "quarantine.html", cards=cards, nav="quarantine")
+
+
+@app.get("/ui/inbox", response_class=HTMLResponse, include_in_schema=False,
+         dependencies=[Depends(require_page)])
+async def ui_inbox(request: Request):
+    # No watcher state here any more — that warning lives on the overview with
+    # the other two, and asking systemd for it on every inbox page load was a
+    # subprocess for something nothing rendered.
+    return _page(request, "inbox.html", entries=inbox_mod.entries(), nav="inbox")
 
 
 @app.get("/ui/fetched", response_class=HTMLResponse, include_in_schema=False,
