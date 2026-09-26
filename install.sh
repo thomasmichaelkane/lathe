@@ -456,10 +456,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
   # setgid, so that a file arriving from a human upload is group-owned by
   # `music` and therefore movable and deletable by beets. Without it every
   # upload fails at IMPORT time rather than at copy time, which is a confusing
-  # place to find out (§11 Phase 0). These are the two directories a human
-  # writes into directly.
-  chmod 2775 "$SRV/inbox" "$SRV/staging/incoming"
-  say "  setgid     $SRV/inbox, $SRV/staging/incoming"
+  # place to find out (§11 Phase 0). These are the directories a human, or a
+  # tool run by one, writes into directly: uploads, and farfetchd's output
+  # (docs/fetch-contract.md says what farfetchd has to do on its side).
+  chmod 2775 "$SRV/inbox" "$SRV/staging/incoming" "$SRV/staging/fetched"
+  say "  setgid     $SRV/inbox, $SRV/staging/incoming, $SRV/staging/fetched"
 fi
 
 # The system packages the deploy depends on. These used to be a line in the

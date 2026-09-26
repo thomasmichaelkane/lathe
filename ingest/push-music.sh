@@ -8,7 +8,7 @@
 # Usage:
 #   ./push-music.sh ~/albums/                 # everything under a folder
 #   ./push-music.sh ~/albums/Some\ Album      # one album
-#   MUSIC_HOST=pi ./push-music.sh ~/albums/
+#   MUSIC_HOST=lathe.tailnet-name.ts.net ./push-music.sh ~/albums/
 #
 # Why two stages rather than rsync straight into /srv/inbox:
 #
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-HOST="${MUSIC_HOST:-pi}"
+HOST="${MUSIC_HOST:-lathe}"
 INCOMING=/srv/staging/incoming
 INBOX=/srv/inbox
 
@@ -41,9 +41,19 @@ echo "Uploading to $HOST:$INCOMING"
 
 # --chmod forces group-writable so the `music` user can move and delete these
 # during import. Without it, files arrive owned by you and beets fails.
+#
+# --no-group is the other half, and -a silently undoes it without this: -a
+# includes -g, which sets each file's group to the one it had on the laptop.
+# You are a member of your own group on the Pi too, so rsync is allowed to,
+# and the setgid bit on staging/incoming — which is what makes uploads
+# group-owned by `music` — is overridden on every file and folder. beets then
+# cannot move files out of folders it does not own, and the quarantine sweep
+# cannot rename them. With --no-group they inherit `music` from the setgid
+# directory, as intended.
 # --partial keeps progress on a dropped connection; the staging directory is
 # unwatched, so half-transferred files there are harmless.
 rsync -a \
+  --no-group \
   --info=progress2 \
   --partial \
   --chmod=Dg+rwxs,Fg+rw \

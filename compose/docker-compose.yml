@@ -15,7 +15,10 @@
 
 services:
   navidrome:
-    image: deluan/navidrome:latest
+    # Pinned to the version every measurement in docs/plan.md was taken on
+    # (disc grouping §6.5a, cover-art priority §6.3). Bump it deliberately,
+    # in a commit, and re-check those — not by whatever `latest` is that day.
+    image: deluan/navidrome:0.63.2
     container_name: navidrome
     restart: unless-stopped
 
@@ -50,13 +53,16 @@ services:
       # Default logs you out inconveniently often on mobile (§12).
       ND_SESSIONTIMEOUT: 720h
 
-      # TURN THIS OFF AFTER FIRST BOOT.
+      # Off, and nothing needs it on. It lets the web UI edit transcoding
+      # *commands*, which is remote command execution by design. Opus 128k is
+      # one of Navidrome's built-in transcodings (consts.DefaultTranscodings,
+      # checked on 0.63.2), so clients can already ask for it.
       #
-      # It exists to let the web UI define transcoding *commands*, which is
-      # remote command execution by design. It is acceptable on a single-user
-      # tailnet for the few minutes it takes to configure Opus 128k, and not
-      # after that. Set "false" and `docker compose up -d` again — §5.
-      ND_ENABLETRANSCODINGCONFIG: "true"
+      # If you ever do need to edit one, do not change this line on the Pi —
+      # that dirties the checkout and install.sh refuses it. Put
+      # ND_ENABLETRANSCODINGCONFIG=true in compose/.env (gitignored), run
+      # `docker compose up -d`, make the edit, then delete it and run it again.
+      ND_ENABLETRANSCODINGCONFIG: "${ND_ENABLETRANSCODINGCONFIG:-false}"
 
       ND_DEFAULTTHEME: Dark
 
@@ -161,8 +167,8 @@ secrets:
 # It runs as a systemd service on the host instead — systemd/librariand.service,
 # deployed by install.sh. §5 and §10 of docs/plan.md carry the reasoning: it
 # re-runs a beets import to resolve a quarantined release, and beets lives on
-# the host via uv. A container would have needed its own beets, which is two
-# installs to keep in step and one of them writing to the library.
+# the host in install.sh's venv. A container would have needed its own beets,
+# which is two installs to keep in step and one of them writing to the library.
 #
 # So this file is Navidrome, plus the opt-in torrent pair above. The one
 # Dockerfile in the repo is aria2's, and it is three lines.
