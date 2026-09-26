@@ -1298,6 +1298,8 @@ because almost nothing runs from where it is checked out:
 | `systemd/*.service`, `systemd/*.path`, `systemd/*.timer` | `/etc/systemd/system/` |
 | `librariand/*.py`, `librariand/templates/`, `librariand/static/` | `/usr/local/lib/librariand/` |
 | `librariand/requirements.txt` | installed into `/usr/local/lib/librariand/venv` |
+| `ingest/beets/requirements.txt` | installed into `/usr/local/lib/beets`, with `/usr/local/bin/beet` → its `bin/beet` |
+| `ingest/beets-check.sh` | `/usr/local/bin/beets-check.sh` — run as `music` after every deploy |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
 | `systemd/journald.conf.d/lathe.conf` | `/etc/systemd/journald.conf.d/` |
 | `lathe.env.example` | `/etc/default/lathe` — **once**, if absent; never overwritten |
@@ -1427,6 +1429,14 @@ Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes 
 **b) Tune beets — highest value of the real work**
 
 **Install beets 2.x — not the distro package.** Ubuntu ships beets `1.6.0` (2022) and that is the only apt candidate, so `apt upgrade` will never move you off it. 1.6.0 writes a corrupted `RELEASETYPE` tag: it stores `albumtypes` as the plain string `album`, mediafile exposes that tag as a *list* field, so it iterates the string character by character and writes `a;l;b;u;m` into every file. These are the archive masters — do not build the library with it.
+
+> **On the laptop only.** This `uv` install is for the Phase −1 test harness.
+> **On the Pi, beets is installed by `install.sh`** — pinned in
+> `ingest/beets/requirements.txt`, into a venv at `/usr/local/lib/beets`, with
+> `/usr/local/bin/beet` on the default PATH. A per-user `uv` install there would
+> land in one user's `~/.local/bin`, which the importer — running as `music`
+> with systemd's default PATH — never looks in, and which Debian's private home
+> directories would not let it enter anyway. Settled 2026-09-26.
 
 A system-wide `pip install` is blocked by PEP 668 (`EXTERNALLY-MANAGED`). Use `uv`, which puts `beet` on `PATH` in an isolated environment without touching system packages:
 
@@ -1629,8 +1639,10 @@ happens when one thing is written down twice.
 > At this point the system is genuinely useful. Everything after is upgrade.
 
 ### Phase 2 — Ripping, manually
-- Install `abcde`, `flac`, `cdparanoia`, `beets` and plugins
-- Write `/etc/abcde.conf` and beets config
+- Install `abcde`, `flac` and `cdparanoia` from apt. **beets and its plugins
+  are already there** — `install.sh` installed them in Phase 0, pinned, and
+  `beets-check.sh` proved every plugin loads as `music`.
+- ~~Write `/etc/abcde.conf` and beets config~~ — both deployed by `install.sh`
 - Rip one CD by hand, import by hand, confirm it lands correctly and appears in Navidrome
 - **Done when:** one album has gone disc → library with correct tags and art
 

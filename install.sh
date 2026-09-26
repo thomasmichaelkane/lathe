@@ -67,6 +67,7 @@ done
 MUSIC_USER="${MUSIC_USER:-music}"
 SRV="${SRV:-/srv}"
 LIBRARIAND_DIR="${LIBRARIAND_DIR:-/usr/local/lib/librariand}"
+BEETS_VENV="${BEETS_VENV:-/usr/local/lib/beets}"
 BEETS_DIR="${BEETS_DIR:-$SRV/config/beets}"
 # Overridable for install-test.sh only; the defaults are the real paths.
 LATHE_ENV="${LATHE_ENV:-/etc/default/lathe}"
@@ -232,6 +233,8 @@ fi  # end deploy-only preconditions
 deployed_targets() {
   printf '%s\n' /usr/local/bin/autorip.sh
   printf '%s\n' /usr/local/bin/inbox-import.sh
+  printf '%s\n' /usr/local/bin/beets-check.sh
+  printf '%s\n' /usr/local/bin/beet          # a symlink into $BEETS_VENV
   printf '%s\n' /etc/abcde.conf
   printf '%s\n' "$BEETS_DIR/config.yaml"
 
@@ -293,7 +296,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   removed=0
   abcde_removed=0
   while IFS= read -r target; do
-    [ -e "$target" ] || { say "  absent     $target"; continue; }
+    # -L as well as -e: a symlink whose target has already gone (the beet link,
+    # if the venv was removed by hand) fails -e but is still there to remove.
+    [ -e "$target" ] || [ -L "$target" ] || { say "  absent     $target"; continue; }
     if [ "$DRY_RUN" -eq 1 ]; then
       say "  WOULD REMOVE  $target"
     else
@@ -317,6 +322,17 @@ if [ "$UNINSTALL" -eq 1 ]; then
   else
     rm -rf "$LIBRARIAND_DIR"
     say "  removed    $LIBRARIAND_DIR/ (including its venv)"
+  fi
+
+  # beets' venv goes the same way. Nothing in /srv depends on it existing:
+  # library.db and state.pickle live under /srv/config/beets and are untouched.
+  if [ ! -d "$BEETS_VENV" ]; then
+    say "  absent     $BEETS_VENV/"
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    say "  WOULD REMOVE  $BEETS_VENV/ (the beets install)"
+  else
+    rm -rf "$BEETS_VENV"
+    say "  removed    $BEETS_VENV/ (the beets install)"
   fi
 
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -442,6 +458,7 @@ fi
 say "scripts:"
 install_file "$REPO/ingest/autorip.sh"      /usr/local/bin/autorip.sh      0755 root:root || true
 install_file "$REPO/ingest/inbox-import.sh" /usr/local/bin/inbox-import.sh 0755 root:root || true
+install_file "$REPO/ingest/beets-check.sh"  /usr/local/bin/beets-check.sh  0755 root:root || true
 
 say "ripper config:"
 install_file "$REPO/ingest/abcde.conf" /etc/abcde.conf 0644 root:root || true
@@ -462,11 +479,70 @@ for plugin in "$REPO"/ingest/beets/plugins/*.py; do
   install_file "$plugin" "$BEETS_DIR/plugins/$(basename "$plugin")" 0644 "$MUSIC_USER:$MUSIC_USER" || true
 done
 
-# .timer is globbed alongside .service and .path even though no timer exists
-# yet, because lint (§6.6) and restic (§8) are both specced to ship one. A unit
-# type missing from this glob is not an error anywhere — the file simply never
-# reaches /etc/systemd/system, and a timer that was never deployed looks exactly
-# like a timer that never fired.
+# beets itself, in a venv this script owns, pinned by ingest/beets/requirements.txt.
+#
+# Not a per-user `uv tool install`: that puts beet in one user's ~/.local/bin,
+# which the importer — running as `music` with systemd's default PATH — would
+# never find, and which Debian's private home directories would not let it
+# enter anyway. /usr/local/bin is on every user's default PATH.
+#
+# Same rules as librariand's venv below: reinstalled whenever the requirements
+# differ from the copy recorded after the last SUCCESSFUL install, never fatal,
+# retried on the next run if the network fails.
+say "beets ($BEETS_VENV):"
+BEETS_REQ="$REPO/ingest/beets/requirements.txt"
+BEETS_STAMP="$BEETS_VENV/.installed-requirements"
+if [ -x "$BEETS_VENV/bin/beet" ] && [ -f "$BEETS_STAMP" ] && cmp -s "$BEETS_REQ" "$BEETS_STAMP"; then
+  say "  unchanged  $BEETS_VENV"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  if [ -x "$BEETS_VENV/bin/beet" ]; then
+    say "  WOULD UPDATE  $BEETS_VENV (requirements.txt changed)"
+  else
+    say "  WOULD CREATE  $BEETS_VENV (downloads beets and its plugins)"
+  fi
+else
+  say "  installing beets — this needs the network"
+  if { [ -x "$BEETS_VENV/bin/python" ] || python3 -m venv "$BEETS_VENV" >/dev/null 2>&1; } \
+     && "$BEETS_VENV/bin/pip" install --quiet --disable-pip-version-check -r "$BEETS_REQ" >/dev/null 2>&1; then
+    cp "$BEETS_REQ" "$BEETS_STAMP"
+    say "  ready      $BEETS_VENV"
+  else
+    warn "could not install beets into $BEETS_VENV. Nothing will import until"
+    warn "this succeeds; the next run retries it. Needs python3-venv and a network."
+  fi
+fi
+
+# The name everything calls. A symlink rather than a copy, so the venv's own
+# absolute shebang keeps working; created under a temp name and renamed, so
+# there is no moment where `beet` does not exist.
+BEET_LINK=/usr/local/bin/beet
+if [ "$(readlink "$BEET_LINK" 2>/dev/null)" = "$BEETS_VENV/bin/beet" ]; then
+  say "  unchanged  $BEET_LINK"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  say "  WOULD CREATE  $BEET_LINK -> $BEETS_VENV/bin/beet"
+else
+  ln -sfn "$BEETS_VENV/bin/beet" "$BEET_LINK.lathe-install.$$"
+  mv -Tf "$BEET_LINK.lathe-install.$$" "$BEET_LINK"
+  say "  linked     $BEET_LINK -> $BEETS_VENV/bin/beet"
+fi
+
+# Prove it works, as the user that will actually run it. beets drops a plugin it
+# cannot load and carries on with exit status 0, so an import can "succeed"
+# with no Bandcamp source, no ReplayGain, or no MusicBrainz at all. See
+# beets-check.sh. Not fatal to the deploy — everything else still went out —
+# but the script exits non-zero at the end so it cannot scroll past unnoticed.
+BEETS_BROKEN=0
+if [ "$DRY_RUN" -eq 0 ]; then
+  if check_out="$(runuser -u "$MUSIC_USER" -- /usr/local/bin/beets-check.sh \
+                    "$BEET_LINK" "$BEETS_DIR/config.yaml" 2>&1)"; then
+    say "  checked    $check_out"
+  else
+    BEETS_BROKEN=1
+    warn "beets is NOT healthy as $MUSIC_USER:"
+    printf '%s\n' "$check_out" | sed 's/^/           /' >&2
+  fi
+fi
+
 # librariand is a directory of code rather than a single script, so it does not
 # fit the copy table's one-file-one-destination shape. Same rules apply: every
 # file is renamed into place, and nothing here is ever edited in situ.
@@ -532,6 +608,11 @@ else
   fi
 fi
 
+# .timer is globbed alongside .service and .path even though no timer exists
+# yet, because lint (§6.6) and restic (§8) are both specced to ship one. A unit
+# type missing from this glob is not an error anywhere — the file simply never
+# reaches /etc/systemd/system, and a timer that was never deployed looks exactly
+# like a timer that never fired.
 say "systemd units:"
 for unit in "$REPO"/systemd/*.service "$REPO"/systemd/*.path "$REPO"/systemd/*.timer; do
   [ -e "$unit" ] || continue
@@ -678,4 +759,15 @@ if [ "${#CHANGED[@]}" -eq 0 ]; then
   say "nothing changed — system already matches the repo."
 else
   say "deployed ${#CHANGED[@]} file(s)."
+fi
+
+# Last, so it is the final thing on screen. The deploy itself went through;
+# this is the one failure that would otherwise present as imports quietly
+# matching less than they should.
+if [ "${BEETS_BROKEN:-0}" -eq 1 ]; then
+  say ""
+  warn "deployed, but beets is not healthy — see above. Imports will run"
+  warn "without the missing plugin(s) and say nothing. Fix before importing:"
+  warn "  sudo -u $MUSIC_USER beets-check.sh"
+  exit 1
 fi

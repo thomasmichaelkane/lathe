@@ -47,6 +47,18 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --quiet --disable-pip-version-check -r librariand/requirements.txt
 
+      # beets as the Pi will run it: the pinned venv, then the same health check
+      # install.sh runs after every deploy. beets drops a plugin it cannot load
+      # and exits 0, so without this a bad pin would ship and be discovered as
+      # imports that quietly stop matching. ffmpeg is installed above because
+      # the replaygain plugin refuses to load without it.
+      - name: beets
+        run: |
+          python -m venv "$RUNNER_TEMP/beets"
+          "$RUNNER_TEMP/beets/bin/pip" install --quiet --disable-pip-version-check -r ingest/beets/requirements.txt
+          PLUGINPATH="$PWD/ingest/beets/plugins" \
+            ./ingest/beets-check.sh "$RUNNER_TEMP/beets/bin/beet" ingest/beets/config.yaml
+
       # The venv goes first on PATH so the suites that invoke `python3` get
       # mediafile; librariand-test.sh finds .venv on its own.
       - name: Tests

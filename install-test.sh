@@ -115,6 +115,16 @@ has "deploys abcde.conf"        "/etc/abcde.conf"                         "$OUT"
 has "deploys the beets config"  "$SRV/config/beets/config.yaml"           "$OUT"
 has "deploys the udev rule"     "/etc/udev/rules.d/99-autorip.rules"      "$OUT"
 has "deploys the journald cap"  "/etc/systemd/journald.conf.d/lathe.conf" "$OUT"
+has "installs beets into its own venv" "/usr/local/lib/beets"             "$OUT"
+has "and puts beet on the default PATH" "/usr/local/bin/beet -> "        "$OUT"
+has "and ships the beets health check" "/usr/local/bin/beets-check.sh"   "$OUT"
+
+# beets puts state.pickle in its config DIRECTORY unless told otherwise, and the
+# importer runs with no BEETSDIR as a user whose home is /srv — so without this
+# the one file deciding what `incremental` skips lands in /srv/.config/beets.
+check "the beets statefile is pinned beside library.db" \
+  "$(sed -n 's/^statefile:[[:space:]]*//p' "$SCRIPT_DIR/ingest/beets/config.yaml")" \
+  "/srv/config/beets/state.pickle"
 has "deploys the path unit"     "/etc/systemd/system/inbox.path"          "$OUT"
 has "creates the env file"      "/etc/default/lathe"                      "$OUT"
 
