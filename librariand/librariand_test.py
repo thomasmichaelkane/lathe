@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -185,6 +186,122 @@ def build_srv(srv: Path) -> None:
         {"sources": {"musicbrainz": none, "bandcamp": none}}), encoding="utf-8")
 
 
+# ------------------------------------------------------------- fake aria2
+
+class FakeAria2:
+    """Just enough of aria2's JSON-RPC to drive torrents.py, advanced by hand.
+
+    Shaped on a real aria2 1.37 run (2026-09-26): a magnet is a metadata
+    download with no `bittorrent.info`, which completes and is `followedBy`
+    the real one; the payload lands in <dir>/<info.name>/ with a `.aria2`
+    control file beside it until the download completes.
+    """
+
+    SECRET = "test-secret"
+
+    def __init__(self):
+        import http.server
+        import threading
+        self.rows: dict[str, dict] = {}
+        self.n = 0
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                params = req["params"]
+                if params[:1] != [f"token:{fake.SECRET}"]:
+                    body, code = {"error": {"code": 1, "message": "Unauthorized"}}, 400
+                else:
+                    try:
+                        body = {"result": getattr(fake, req["method"].split(".")[1])(*params[1:])}
+                        code = 200
+                    except KeyError:
+                        body, code = {"error": {"code": 1, "message": "GID not found"}}, 400
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}/jsonrpc"
+
+    def _gid(self):
+        self.n += 1
+        return f"{self.n:016x}"
+
+    # --- RPC methods
+    def getVersion(self):
+        return {"version": "fake"}
+
+    def addUri(self, uris, opts):
+        gid = self._gid()
+        self.rows[gid] = {"gid": gid, "status": "active", "dir": opts["dir"],
+                          "totalLength": "0", "completedLength": "0",
+                          "downloadSpeed": "0", "connections": "2",
+                          "magnet": uris[0], "seed": opts.get("seed-time")}
+        return gid
+
+    def _tell(self, statuses):
+        return [{k: v for k, v in r.items() if k != "magnet"}
+                for r in self.rows.values() if r["status"] in statuses]
+
+    def tellActive(self, keys):
+        return self._tell({"active"})
+
+    def tellWaiting(self, offset, num, keys):
+        return self._tell({"waiting", "paused"})
+
+    def tellStopped(self, offset, num, keys):
+        return self._tell({"complete", "error", "removed"})
+
+    def forceRemove(self, gid):
+        self.rows[gid]["status"] = "removed"
+        return gid
+
+    def removeDownloadResult(self, gid):
+        del self.rows[gid]
+        return "OK"
+
+    # --- test controls
+    def tick(self):
+        """Advance every download one step: metadata -> 50% -> complete."""
+        for r in list(self.rows.values()):
+            if r["status"] != "active":
+                continue
+            if "bittorrent" not in r:
+                r["status"] = "complete"
+                gid = self._gid()
+                r["followedBy"] = [gid]
+                self.rows[gid] = {"gid": gid, "status": "active", "dir": r["dir"],
+                                  "totalLength": "1000", "completedLength": "500",
+                                  "downloadSpeed": "100", "connections": "3",
+                                  "bittorrent": {"info": {"name": "Tick Album"}}}
+                album = Path(r["dir"]) / "Tick Album"
+                album.mkdir(parents=True, exist_ok=True)
+                mkflac(album / "01 Tick.flac", "Tick Album", "Ticker", "Tick", 1, 1, 1)
+                (album / "01 Tick.flac.aria2").write_bytes(b"ctl")
+            else:
+                r["status"], r["completedLength"] = "complete", r["totalLength"]
+                for ctl in Path(r["dir"]).rglob("*.aria2"):
+                    ctl.unlink()
+
+    def fail(self):
+        for r in self.rows.values():
+            if r["status"] == "active":
+                r["status"], r["errorMessage"] = "error", "No peers found"
+
+
+MAGNET = ("magnet:?xt=urn:btih:40b43013f9d149afa64f59239bf9688eb938b193"
+          "&dn=Test+Album&tr=http%3A%2F%2Ftracker.example%2Fannounce")
+MAGNET2 = MAGNET.replace("40b43013", "50b43013").replace("Test+Album", "Second")
+
+
 # --------------------------------------------------------------------- main
 
 def main() -> int:
@@ -206,6 +323,7 @@ def main() -> int:
         f.chmod(0o755)
 
     build_srv(srv)
+    aria2 = FakeAria2()
 
     os.environ.update({
         "SRV": str(srv),
@@ -214,6 +332,9 @@ def main() -> int:
         "FETCHED": str(srv / "staging" / "fetched"),
         "RIP_LOGS": str(srv / "logs" / "rips"),
         "MATCHES": str(srv / "logs" / "matches"),
+        "TORRENTS": str(srv / "staging" / "torrents"),
+        "ARIA2_RPC": aria2.url,
+        "ARIA2_SECRET": FakeAria2.SECRET,
         "RIPS": str(srv / "staging" / "rips"),
         "MUSIC": str(srv / "music"),
         "BEETS_CONFIG": str(srv / "config" / "beets" / "config.yaml"),
@@ -234,12 +355,116 @@ def main() -> int:
 
     try:
         run_checks(client, auth, srv)
+        run_torrent_checks(client, auth, srv, aria2)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n-----------------------------------------")
     print(f"librariand-test: {passed} passed, {failed} failed")
     return 1 if failed else 0
+
+
+def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
+    import torrents as torrents_mod
+    torrents_dir = srv / "staging" / "torrents"
+    listed = lambda: client.get("/torrents", headers=auth).json()  # noqa: E731
+
+    section("fetch — adding")
+    check("junk is refused", client.post("/torrents", headers=auth,
+          json={"magnet": "https://example.com/x.torrent"}).status_code, 400)
+    check("a magnet with no info hash is refused", client.post(
+          "/torrents", headers=auth, json={"magnet": "magnet:?dn=x"}).status_code, 400)
+    r = client.post("/torrents", headers=auth, json={"magnet": MAGNET}).json()
+    truthy("a magnet is accepted", r["ok"])
+    tid = r["id"]
+    row = next(iter(aria2.rows.values()))
+    check("into its own directory", row["dir"], str(torrents_dir / tid))
+    check("with seeding off", row["seed"], "0")
+    r = client.post("/torrents", headers=auth, json={"magnet": MAGNET}).json()
+    check("adding the same magnet again returns the same download", r["id"], tid)
+    check("without a second aria2 job", len(aria2.rows), 1)
+
+    section("fetch — progress")
+    l = listed()
+    truthy("aria2 is reported reachable", l["aria2"])
+    t = l["torrents"][0]
+    check("a new magnet is finding metadata", t["state"], "metadata")
+    check("named from the magnet meanwhile", t["name"], "Test Album")
+    page = client.get("/ui/fetch", headers=auth).text
+    truthy("the page offers the + button", 'data-action="add-open"' in page)
+    truthy("and polls while it is active", 'data-active="1"' in page)
+    truthy("and says what it is doing", "Finding the torrent" in page)
+
+    aria2.tick()
+    t = listed()["torrents"][0]
+    check("then downloads, as the real torrent", t["state"], "downloading")
+    check("named from the torrent itself", t["name"], "Tick Album")
+    check("at 50%", t["progress"], 50.0)
+    check("with an ETA", t["eta_seconds"], 5)
+    check("nothing is ready to move yet", torrents_mod.ready_count(), 0)
+    r = client.post(f"/torrents/{tid}/move", headers=auth)
+    check("moving it early is refused", r.status_code, 409)
+    truthy("and moves nothing", (torrents_dir / tid).is_dir())
+
+    aria2.tick()
+    t = listed()["torrents"][0]
+    check("then completes", t["state"], "complete")
+    check("counting its audio", t["audio_files"], 1)
+    page = client.get("/ui/fetch", headers=auth).text
+    truthy("the finished card offers the move", 'data-action="move"' in page)
+    truthy("and stops polling", 'data-active="1"' not in page)
+    check("it counts as ready to move", torrents_mod.ready_count(), 1)
+    truthy("in the Fetch nav badge", re.search(
+        r'href="/ui/fetch"[^>]*>Fetch\s*<span class="count ?">(\d+)', page) is not None)
+
+    section("fetch — moving")
+    r = client.post(f"/torrents/{tid}/move", headers=auth).json()
+    truthy("a finished download moves", r["ok"])
+    truthy("into the inbox under the torrent's name",
+           (srv / "inbox" / "Tick Album" / "01 Tick.flac").is_file())
+    check("leaving nothing behind in staging", (torrents_dir / tid).exists(), False)
+    check("and clearing aria2's record of it", len(aria2.rows), 0)
+    r = client.post(f"/torrents/{tid}/move", headers=auth).json()
+    truthy("pressing it again is harmless", r["ok"] and "already" in r["detail"])
+
+    section("fetch — failure, resume, cancel")
+    tid2 = client.post("/torrents", headers=auth, json={"magnet": MAGNET2}).json()["id"]
+    aria2.fail()
+    t = listed()["torrents"][0]
+    check("a failed download says so", t["state"], "error")
+    check("with aria2's reason", t["error"], "No peers found")
+    r = client.post(f"/torrents/{tid2}/resume", headers=auth).json()
+    truthy("it can be resumed", r["ok"])
+    check("which re-submits it", listed()["torrents"][0]["state"], "metadata")
+    r = client.post(f"/torrents/{tid2}/resume", headers=auth).json()
+    check("resuming a live download is a no-op", r["detail"], "already downloading")
+
+    aria2.rows.clear()  # aria2 restarted with no session
+    check("a download aria2 forgot is interrupted",
+          listed()["torrents"][0]["state"], "interrupted")
+
+    r = client.delete(f"/torrents/{tid2}", headers=auth).json()
+    truthy("cancel deletes it", r["ok"] and not (torrents_dir / tid2).exists())
+    r = client.delete(f"/torrents/{tid2}", headers=auth).json()
+    truthy("cancelling again is harmless", r["ok"])
+    truthy("a traversal id is refused",
+           client.delete("/torrents/..%2F..%2Fetc", headers=auth).status_code >= 400)
+    check("as is any id that is not one of ours",
+          client.post("/torrents/inbox/move", headers=auth).status_code, 400)
+
+    section("fetch — aria2 down")
+    good = os.environ["ARIA2_RPC"]
+    torrents_mod.ARIA2_RPC = "http://127.0.0.1:9/jsonrpc"
+    try:
+        check("the list says aria2 is down", listed()["aria2"], False)
+        r = client.post("/torrents", headers=auth, json={"magnet": MAGNET})
+        check("adding fails", r.status_code, 400)
+        truthy("saying where it looked", "127.0.0.1:9" in r.json()["detail"])
+        truthy("and leaves no directory behind", not any(torrents_dir.iterdir()))
+        page = client.get("/ui/fetch", headers=auth).text
+        truthy("the page shows a banner", "aria2 is not reachable" in page)
+    finally:
+        torrents_mod.ARIA2_RPC = good
 
 
 def run_checks(client, auth, srv: Path):
@@ -467,7 +692,7 @@ def run_checks(client, auth, srv: Path):
                          # The page title, not a button: by this point the
                          # earlier checks have approved one entry and rejected
                          # another, so which buttons remain depends on state.
-                         ("/ui/fetched", "Fetched"),
+                         ("/ui/fetch", "Fetch"),
                          ("/ui/rips", "Result")]:
         resp = client.get(path, headers=auth)
         check(f"{path} returns 200", resp.status_code, 200)
@@ -489,7 +714,7 @@ def run_checks(client, auth, srv: Path):
     over = client.get("/", headers=auth)
     truthy("the overview calls the section Pipeline", ">Pipeline<" in over.text)
     truthy("and the drive section Optical drive", "Optical drive" in over.text)
-    truthy("with tiles named after the tabs", ">Fetched<" in over.text and ">Ripped<" in over.text)
+    truthy("with tiles named after the tabs", ">Fetch<" in over.text and ">Ripped<" in over.text)
     truthy("and no top-artists table", "Most albums" not in over.text)
     truthy("there is no inbox tab", '/ui/inbox' not in over.text)
     check("or inbox page", client.get("/ui/inbox", headers=auth).status_code, 404)
@@ -510,7 +735,7 @@ def run_checks(client, auth, srv: Path):
     truthy("the overview says so", "No token set" in page.text)
     # Banners are overview-only. Repeated on every tab, a warning stops being
     # read by the third page.
-    for path in ("/ui/quarantine", "/ui/fetched", "/ui/rips"):
+    for path in ("/ui/quarantine", "/ui/fetch", "/ui/rips"):
         truthy(f"but {path} does not repeat it",
                "No token set" not in open_client.get(path).text)
     os.environ["LIBRARIAND_TOKEN"] = TOKEN

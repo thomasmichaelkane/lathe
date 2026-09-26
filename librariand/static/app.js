@@ -87,6 +87,31 @@ document.addEventListener("click", (ev) => {
                  "merged and handed back to the inbox");
     }
 
+    case "add-open": {
+      const form = document.getElementById("add-form");
+      form.hidden = !form.hidden;
+      btn.setAttribute("aria-expanded", String(!form.hidden));
+      if (!form.hidden) document.getElementById("magnet").focus();
+      return;
+    }
+
+    case "add": {
+      const input = document.getElementById("magnet");
+      const magnet = (input.value || "").trim();
+      if (!magnet) { input.focus(); return flash("paste a magnet link", true); }
+      return act(btn, "POST", "/torrents", { magnet });
+    }
+
+    case "move":
+      return act(btn, "POST", `/torrents/${name}/move`);
+
+    case "resume":
+      return act(btn, "POST", `/torrents/${name}/resume`);
+
+    case "cancel":
+      if (!confirm(`Cancel "${a.label}" and delete what it downloaded?`)) return;
+      return act(btn, "DELETE", `/torrents/${name}`);
+
     case "nudge":
       return act(btn, "POST", "/inbox/nudge");
 
@@ -100,9 +125,31 @@ document.addEventListener("click", (ev) => {
   }
 });
 
-/* Enter in an ID field is the same as pressing Retry next to it. */
+/* Live progress on the Fetch page. Re-renders #torrents from the server
+ * rather than formatting numbers here, so there is one template for a card,
+ * not two. Stops by itself once nothing is downloading. */
+async function pollTorrents() {
+  const list = document.getElementById("torrents");
+  if (!list || !list.querySelector('[data-active="1"]')) return;
+  try {
+    const res = await fetch(location.pathname, { cache: "no-store" });
+    const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+    const fresh = doc.getElementById("torrents");
+    // Never swap a card out from under a click in progress.
+    if (fresh && !list.querySelector(".spin")) list.replaceWith(fresh);
+  } catch { /* offline for a moment; try again next tick */ }
+  setTimeout(pollTorrents, 3000);
+}
+setTimeout(pollTorrents, 3000);
+
+/* Enter in an ID field is the same as pressing Retry next to it; in the
+ * magnet field, the same as pressing Fetch. */
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
+  if (ev.target.id === "magnet") {
+    ev.preventDefault();
+    return document.querySelector('[data-action="add"]')?.click();
+  }
   const input = ev.target.closest("input[data-resolve-for]");
   if (!input) return;
   ev.preventDefault();

@@ -185,6 +185,12 @@ ul.notes li { margin: 2px 0; }
 .tile.warn  .n { color: var(--warn); }
 .tile.acid  .n { color: var(--acid); }
 
+/* Fetch: the + sits above the cards; the magnet field opens beside it. */
+.fetch-add { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; }
+.fetch-add .add-open { font-size: 22px; line-height: 1; padding: 0; width: 44px; min-height: 42px; }
+.fetch-add .field { flex: 1 1 auto; margin-top: 0; }
+.fetch-add .field[hidden] { display: none; }
+
 /* Inbox holding something: the whole tile turns, not just the number. */
 .tile { position: relative; }
 .tile.stuck { background: #1f1a0e; border-color: #5a4320; border-left: 3px solid var(--warn); }

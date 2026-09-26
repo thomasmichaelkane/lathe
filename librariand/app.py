@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -42,6 +43,7 @@ import quarantine
 import resolve as resolve_mod
 import rips
 import system
+import torrents
 
 HERE = Path(__file__).resolve().parent
 
@@ -242,6 +244,52 @@ async def api_inbox():
     return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
+class MagnetBody(BaseModel):
+    magnet: str
+
+
+@app.get("/torrents", dependencies=[Depends(require_api)])
+def api_torrents():
+    downloads, online = torrents.entries()
+    return {"aria2": online,
+            "torrents": [asdict(t) | {"finished": t.finished, "active": t.active}
+                         for t in downloads]}
+
+
+@app.post("/torrents", dependencies=[Depends(require_api)])
+def api_torrent_add(body: MagnetBody):
+    try:
+        return {"ok": True, **torrents.add(body.magnet)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
+@app.post("/torrents/{tid}/move", dependencies=[Depends(require_api)])
+def api_torrent_move(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.move(tid)}
+    except torrents.BadId as exc:
+        return _fail(exc)
+    except torrents.TorrentError as exc:
+        return _fail(exc, 409)
+
+
+@app.post("/torrents/{tid}/resume", dependencies=[Depends(require_api)])
+def api_torrent_resume(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.resume(tid)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
+@app.delete("/torrents/{tid}", dependencies=[Depends(require_api)])
+def api_torrent_cancel(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.cancel(tid)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
 @app.post("/inbox/nudge", dependencies=[Depends(require_api)])
 async def api_inbox_nudge():
     # With the watcher down a nudge fires nothing, and saying "started" would
@@ -283,10 +331,14 @@ async def api_eject(body: EjectBody | None = None):
 def _page(request: Request, name: str, **ctx) -> HTMLResponse:
     # `counts` is on every page because the nav badges are on every page.
     # system.pending_counts() is the cheap directory count, not the full scan.
+    # The Fetch badge counts both kinds of thing waiting on you there: a
+    # finished torrent to move, and a farfetchd download to review.
+    counts = system.pending_counts()
+    counts["fetch"] = counts["fetched"] + torrents.ready_count()
     return templates.TemplateResponse(
         request, name,
         {"no_auth": not TOKEN, "human": quarantine._human,
-         "counts": system.pending_counts(), **ctx},
+         "counts": counts, **ctx},
     )
 
 
@@ -382,10 +434,18 @@ async def ui_quarantine(request: Request):
     return _page(request, "quarantine.html", cards=cards, nav="quarantine")
 
 
-@app.get("/ui/fetched", response_class=HTMLResponse, include_in_schema=False,
+@app.get("/ui/fetch", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
-async def ui_fetched(request: Request):
-    return _page(request, "fetched.html", entries=fetched.entries(), nav="fetched")
+def ui_fetch(request: Request):
+    downloads, online = torrents.entries()
+    return _page(request, "fetch.html", torrents=downloads, aria2_online=online,
+                 aria2_rpc=torrents.ARIA2_RPC, entries=fetched.entries(),
+                 now=time.time(), nav="fetch")
+
+
+@app.get("/ui/fetched", include_in_schema=False)
+async def ui_fetched_moved():
+    return RedirectResponse("/ui/fetch", status_code=301)
 
 
 @app.get("/ui/rips", response_class=HTMLResponse, include_in_schema=False,
