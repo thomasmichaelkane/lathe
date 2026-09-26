@@ -28,12 +28,10 @@ Group=music
 # dashboard runs open on the tailnet and says so on every page.
 EnvironmentFile=-/etc/default/lathe
 
-# beets is installed per-user with `uv`, which puts it in ~/.local/bin — and
-# this service runs as `music`, not as the user who installed it. Without the
-# last entry here, `beet` is not on PATH and resolving a quarantined release
-# fails at the point of use rather than at deploy. /health reports it, and the
-# dashboard shows a banner, so a wrong path here is visible rather than silent.
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/tom/.local/bin"
+# No PATH line. beets used to be a per-user install in ~tom/.local/bin, which
+# needed one here — and could not have worked anyway, since Debian home
+# directories are private. install.sh now puts beet in /usr/local/bin, which is
+# on systemd's default PATH for every service.
 
 ExecStart=/usr/local/lib/librariand/venv/bin/python /usr/local/lib/librariand/app.py
 
@@ -48,7 +46,8 @@ Nice=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+# Nothing it runs lives in a home directory any more, so it gets none of them.
+ProtectHome=true
 ReadWritePaths=/srv
 
 [Install]

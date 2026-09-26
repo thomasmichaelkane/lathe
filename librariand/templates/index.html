@@ -115,4 +115,9 @@
 </div>
 {% endif %}
 
+<div class="version mono">
+  lathe {{ health.release.version or 'not deployed by install.sh' }}
+  {% if health.release.commit and health.release.commit not in (health.release.version or '') %}· {{ health.release.commit }}{% endif %}
+</div>
+
 {% endblock %}

@@ -35,6 +35,29 @@ _CACHE: dict = {"at": 0.0, "value": None}
 CACHE_SECONDS = int(os.environ.get("STATS_CACHE_SECONDS", "60"))
 
 
+LATHE_RELEASE = Path(os.environ.get("LATHE_RELEASE", "/etc/lathe-release"))
+
+
+def release() -> dict:
+    """What install.sh last deployed, from /etc/lathe-release.
+
+    Read from the stamp rather than from git, on purpose: the checkout says what
+    is checked OUT, which is not the same thing if someone checked out a new tag
+    and never ran install.sh. The stamp is written only after a deploy finishes.
+    """
+    out = {"version": None, "commit": None, "deployed_at": None}
+    try:
+        text = LATHE_RELEASE.read_text(encoding="utf-8")
+        out["deployed_at"] = LATHE_RELEASE.stat().st_mtime
+    except OSError:
+        return out
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() in ("VERSION", "COMMIT"):
+            out[key.strip().lower()] = value.strip() or None
+    return out
+
+
 def _is_mountpoint(p: Path) -> bool:
     try:
         return p.is_mount()
@@ -44,7 +67,7 @@ def _is_mountpoint(p: Path) -> bool:
 
 def health() -> dict:
     """Everything that would make you say "something is wrong"."""
-    out: dict = {}
+    out: dict = {"release": release()}
 
     # /srv not being a mount point means the library drive did not come back
     # after a reboot, and `nofail` (§4) means the Pi booted happily anyway.

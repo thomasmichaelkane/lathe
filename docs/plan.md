@@ -28,7 +28,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Server | **Navidrome** | Go, tiny, Subsonic + OpenSubsonic API, huge client ecosystem, excellent on ARM |
 | Host | **Raspberry Pi 5, 4GB** | 8GB is ~2x the price in the 2026 memory shortage and unnecessary for this workload |
 | OS | **Raspberry Pi OS Lite, 64-bit** | Headless, minimal, Debian-based, best Pi hardware support |
-| Boot device | **NVMe SSD via M.2 HAT** | SD cards die under sustained SQLite writes. This is the #1 preventable failure. |
+| Boot device | **microSD** (NVMe optional) | Originally NVMe, because SD cards die under sustained SQLite writes. Mounting the library drive at `/srv` (§4) moved every database off the card, so that reason no longer applies — see below. |
 | Library storage | **4TB self-powered USB 3 desktop HDD** | ~8,000 albums in FLAC. Cheap tier during shortage. Never bus-powered. |
 | Deployment | **Docker Compose** | Reproducible, portable to a real NAS later |
 | Rip pipeline | **On the host, not in Docker** | udev + device access in containers is more pain than it's worth |
@@ -1297,7 +1297,14 @@ because almost nothing runs from where it is checked out:
 | `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
 | `systemd/*.service`, `systemd/*.path`, `systemd/*.timer` | `/etc/systemd/system/` |
 | `librariand/*.py`, `librariand/templates/`, `librariand/static/` | `/usr/local/lib/librariand/` |
+| `librariand/requirements.txt` | installed into `/usr/local/lib/librariand/venv` |
+| `ingest/beets/requirements.txt` | installed into `/usr/local/lib/beets`, with `/usr/local/bin/beet` → its `bin/beet` |
+| `ingest/beets-check.sh` | `/usr/local/bin/beets-check.sh` — run as `music` after every deploy |
+| *(apt, only if missing)* | `ffmpeg`, `python3-venv` — installed, never upgraded, never removed by `--uninstall`. `git` stays manual: you need it to get `install.sh` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
+| `systemd/journald.conf.d/lathe.conf` | `/etc/systemd/journald.conf.d/` |
+| `lathe.env.example` | `/etc/default/lathe` — **once**, if absent; never overwritten |
+| *(generated from the git tag)* | `/etc/lathe-release` |
 | `compose/docker-compose.yml` | **nothing — it runs from the checkout** (see below) |
 
 Copying these by hand is fine exactly once. After that it is a trap, and a
@@ -1323,8 +1330,37 @@ Navidrome credentials all outlive it. The one path it cannot cleanly restore is
 `/etc/abcde.conf`, which belongs to the `abcde` package; it says so, and tells
 you to `apt install --reinstall abcde`.
 
-An update is `git pull` followed by `sudo ./install.sh`. It replaces code and
-never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
+**Releases are git tags in `0.1.0` form**, cut by hand from `main`
+(`git tag 0.1.0 && git push origin 0.1.0`). `.github/workflows/release.yml`
+runs every suite on the tag and publishes a GitHub release only if they pass,
+and refuses a tag whose commit is not on `main`. Pull requests run the same
+tests.
+
+The version is **derived from the tag at deploy time**, not kept in a file, so
+there is nothing to bump. `install.sh` writes what it deployed to
+`/etc/lathe-release` (`VERSION=0.1.0`, `COMMIT=abc1234`), last, once everything
+else has succeeded — and librariand shows it. That is deliberately not the same
+as `git describe` in the checkout, which says what is *checked out*, not what
+was deployed. Between tags the version reads `0.1.0-3-gabc1234`, and a checkout
+with local changes appends `-dirty`; neither can pass for a release.
+
+An upgrade is `git fetch --tags && git checkout 0.2.0 && sudo ./install.sh`;
+rolling back is the same with an older tag. The runbook has the full sequence.
+Three things `install.sh` handles so an upgrade cannot half-work:
+
+- **librariand's venv follows `librariand/requirements.txt`**, pinned exactly.
+  It used to be built once and never updated, so a release adding a dependency
+  would have shipped code importing something the venv lacked. It is now
+  reinstalled whenever the file differs from the copy recorded at the last
+  *successful* install, so a failed install is retried rather than forgotten.
+- **`/etc/default/lathe` is seeded from `lathe.env.example`** and still never
+  overwritten — but every deploy names any setting the template has that the
+  live file lacks, so a release's new setting cannot silently go unconfigured.
+- **A checkout with local changes is refused** (`--allow-dirty` overrides).
+  Several deploy steps glob directories, so an untracked file made on the Pi
+  would otherwise ship as part of the release under a clean-looking version.
+
+A deploy replaces code and never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
 beets' `library.db` and `state.pickle`, and Navidrome's database are all
 untouched, so a backlog sitting in quarantine has no bearing on a deploy.
 
@@ -1394,6 +1430,14 @@ Run Navidrome in Docker locally, pointed at a folder of test music. Two minutes 
 **b) Tune beets — highest value of the real work**
 
 **Install beets 2.x — not the distro package.** Ubuntu ships beets `1.6.0` (2022) and that is the only apt candidate, so `apt upgrade` will never move you off it. 1.6.0 writes a corrupted `RELEASETYPE` tag: it stores `albumtypes` as the plain string `album`, mediafile exposes that tag as a *list* field, so it iterates the string character by character and writes `a;l;b;u;m` into every file. These are the archive masters — do not build the library with it.
+
+> **On the laptop only.** This `uv` install is for the Phase −1 test harness.
+> **On the Pi, beets is installed by `install.sh`** — pinned in
+> `ingest/beets/requirements.txt`, into a venv at `/usr/local/lib/beets`, with
+> `/usr/local/bin/beet` on the default PATH. A per-user `uv` install there would
+> land in one user's `~/.local/bin`, which the importer — running as `music`
+> with systemd's default PATH — never looks in, and which Debian's private home
+> directories would not let it enter anyway. Settled 2026-09-26.
 
 A system-wide `pip install` is blocked by PEP 668 (`EXTERNALLY-MANAGED`). Use `uv`, which puts `beet` on `PATH` in an isolated environment without touching system packages:
 
@@ -1509,7 +1553,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 
 **Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `sudo ./install.sh`, `docker compose up`, push the collection in with `push-music.sh` and let beets file it.
 
-**Blocked until hardware:** NVMe boot, and anything that actually touches
+**Blocked until hardware:** anything that actually touches
 `/dev/sr0` — abcde's real output layout, the MusicBrainz disc-ID lookup, the
 read-error patterns, eject, and the udev rule firing on media insertion.
 
@@ -1538,7 +1582,30 @@ that has not happened yet. Deliberately not duplicated here — see §5 for what
 happens when one thing is written down twice.
 
 - Flash Pi OS Lite 64-bit to microSD, boot, update
-- Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
+- ~~Move root filesystem to NVMe~~ — **optional, and not planned.** Settled
+  2026-09-26: the machine boots from the SD card and stays there.
+
+  The NVMe was bought because SD cards die under sustained SQLite writes. Once
+  the library drive was mounted at `/srv` as a whole (§4), every database —
+  Navidrome's, beets' `library.db` and `state.pickle` — and every lathe log
+  moved onto it, so the writes the NVMe existed to absorb stopped hitting the
+  card. What is left on the SD card is all reproducible: the OS, what
+  `install.sh` deploys, the librariand venv, Docker's images, and
+  `/etc/default/lathe`. Losing the card costs an evening with
+  `docs/phase0-runbook.md`, not the library or its history.
+
+  It also avoids the riskiest boot change in the plan. Moving root means
+  editing the EEPROM boot order and cloning a live filesystem, and enabling the
+  NVMe at all needs a PCIe setting in `config.txt` — the drive is not even
+  detected as `nvme0n1` without it. Each is a change that can leave the Pi
+  unbootable, for a benefit the `/srv` mount already delivered.
+
+  The two writers still on the card are capped: Docker's container logs, whose
+  default `json-file` driver never rotates (compose sets `max-size`), and the
+  systemd journal, whose default allowance is 10% of the filesystem
+  (`systemd/journald.conf.d/lathe.conf`, deployed by `install.sh`).
+
+  If you want insurance, an endurance-rated card is the cheap version of it.
 - Create `music` user (**uid and gid 1948** — §4 explains why not 1001), and mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4). The `/srv` tree itself is created by `install.sh` below, not by hand.
 - **Add your own user to the `music` group** (`sudo usermod -aG music tom`, then log out and back in). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. The matching setgid bits on `/srv/inbox` and `/srv/staging/incoming` are applied by `install.sh`; the group membership is not, because which groups a human account belongs to is not a deploy script's business. Skipping it makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale
@@ -1573,8 +1640,10 @@ happens when one thing is written down twice.
 > At this point the system is genuinely useful. Everything after is upgrade.
 
 ### Phase 2 — Ripping, manually
-- Install `abcde`, `flac`, `cdparanoia`, `beets` and plugins
-- Write `/etc/abcde.conf` and beets config
+- Install `abcde`, `flac` and `cdparanoia` from apt. **beets and its plugins
+  are already there** — `install.sh` installed them in Phase 0, pinned, and
+  `beets-check.sh` proved every plugin loads as `music`.
+- ~~Write `/etc/abcde.conf` and beets config~~ — both deployed by `install.sh`
 - Rip one CD by hand, import by hand, confirm it lands correctly and appears in Navidrome
 - **Done when:** one album has gone disc → library with correct tags and art
 

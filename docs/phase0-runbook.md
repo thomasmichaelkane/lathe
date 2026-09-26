@@ -213,13 +213,37 @@ there is no good reason to leave it on for a server.
 ## 9. Clone and deploy
 
 ```sh
-sudo apt install -y git
+sudo apt install -y git                # the one package install.sh cannot install for you
 git clone https://github.com/thomasmichaelkane/lathe.git ~/lathe
 cd ~/lathe
+git checkout 0.1.0                     # a release, not main — see "Upgrading" below
 
 sudo ./install.sh --dry-run            # read this before running it for real
 sudo ./install.sh
+
+cat /etc/lathe-release                 # VERSION=0.1.0
+sudo -u music beets-check.sh           # beets 2.13.1: all 11 plugins loaded
 ```
+
+**`install.sh` installs everything else, so don't do it by hand:**
+
+- **`ffmpeg` and `python3-venv`**, from apt, only if they are missing. ffmpeg
+  runs ReplayGain on **every** import, not just rips; python3-venv builds the
+  two venvs below. `git` is the exception because you need it to get
+  `install.sh` in the first place.
+- **beets**, pinned, into `/usr/local/lib/beets` with `beet` on the default
+  PATH — not from apt, not with `uv tool install`. The importer runs as
+  `music`, and a per-user install lands in your home directory, which `music`
+  can neither see on its PATH nor, on Debian, enter at all.
+- **librariand's dependencies**, pinned, into its own venv.
+
+The first deploy is the only one that needs the network; later ones touch apt
+and pip only if something changed.
+
+`install.sh` finishes by running `beets-check.sh` as `music`, and exits non-zero
+if any plugin the config asks for did not load. That check exists because beets
+itself does not fail: it drops the plugin, prints a traceback, and imports
+anyway with exit status 0.
 
 **This also builds the `/srv` tree** — the §4 directories, owned by `music`,
 with setgid on `inbox/` and `staging/incoming/`. It is idempotent, so re-running
@@ -233,11 +257,46 @@ the mountpoint, where the drive hides it the moment it returns.
 From here on, **`install.sh` is the only thing that writes to a system path**
 (§11, §12). Never edit a deployed copy — edit here and re-run.
 
-An update later is:
+### Upgrading, later
+
+Releases are tags in `0.1.0` form, cut from `main` on the laptop:
 
 ```sh
-cd ~/lathe && git pull && sudo ./install.sh
+git tag 0.2.0 && git push origin 0.2.0
 ```
+
+GitHub Actions runs every test suite on that tag and publishes the release only
+if they pass. Then, on the Pi:
+
+```sh
+cd ~/lathe
+git fetch --tags
+git checkout 0.2.0                     # detached HEAD, on purpose: the Pi runs exactly a release
+sudo ./install.sh --dry-run
+sudo ./install.sh
+docker compose -f compose/docker-compose.yml up -d   # only matters if compose changed; a no-op otherwise
+cat /etc/lathe-release
+```
+
+**Rolling back is the same with an older tag** — `git checkout 0.1.0 && sudo
+./install.sh`. It works because a deploy only ever replaces code: `/srv`, the
+databases and `/etc/default/lathe` are never touched, so going back loses
+nothing.
+
+What `install.sh` takes care of on an upgrade, so you don't have to:
+
+- **librariand's dependencies.** Rebuilt whenever `librariand/requirements.txt`
+  changed, and retried on the next run if the install fails.
+- **New settings.** Your `/etc/default/lathe` is never overwritten, so it
+  names any setting the new release has that your file lacks. Add those by hand.
+- **Local edits.** It refuses to deploy a checkout with local changes — the
+  deploy globs directories, so a stray file would ship as part of the release.
+  `--allow-dirty` overrides it if you really mean it.
+
+**What version is running?** `cat /etc/lathe-release`, or the bottom of
+librariand's overview. That file is written only after a deploy finishes, so it
+records what is deployed — `git describe` in `~/lathe` only tells you what is
+checked out, which differs if you checked out a tag and never ran `install.sh`.
 
 ---
 
