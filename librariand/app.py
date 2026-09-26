@@ -242,6 +242,23 @@ async def api_inbox():
     return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
+@app.post("/inbox/nudge", dependencies=[Depends(require_api)])
+async def api_inbox_nudge():
+    # With the watcher down a nudge fires nothing, and saying "started" would
+    # be a lie. Fixing that needs root, so say what to run instead. None means
+    # systemctl could not be asked — try anyway rather than refuse.
+    if system._unit_active("inbox.path") is False:
+        return _fail(RuntimeError(
+            "inbox.path is not active, so nothing can start the import from "
+            "here. On the Pi: sudo systemctl enable --now inbox.path"), 409)
+    try:
+        inbox_mod.nudge()
+    except OSError as exc:
+        return _fail(exc, 500)
+    return {"ok": True, "detail": "import started — the inbox should drain "
+                                  "within a few minutes"}
+
+
 @app.get("/rips", dependencies=[Depends(require_api)])
 async def api_rips():
     # `passed` and `needs_attention` are properties, so asdict() does not carry
@@ -276,9 +293,14 @@ def _page(request: Request, name: str, **ctx) -> HTMLResponse:
 @app.get("/", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
 async def ui_index(request: Request):
+    # The inbox has no page of its own: it should be empty, so all anyone needs
+    # is whether it is, how long the oldest item has waited, and a way to kick
+    # the importer. That is one tile on the overview.
+    items = inbox_mod.entries()
+    oldest = round(items[0].age_seconds / 60) if items else None
     return _page(request, "index.html",
                  health=system.health(), stats=system.stats(),
-                 nav="overview")
+                 inbox_oldest_min=oldest, nav="overview")
 
 
 # One card per entry, colour-coded by what is actually wrong with it. The
@@ -358,15 +380,6 @@ async def ui_quarantine(request: Request):
     cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
 
     return _page(request, "quarantine.html", cards=cards, nav="quarantine")
-
-
-@app.get("/ui/inbox", response_class=HTMLResponse, include_in_schema=False,
-         dependencies=[Depends(require_page)])
-async def ui_inbox(request: Request):
-    # No watcher state here any more — that warning lives on the overview with
-    # the other two, and asking systemd for it on every inbox page load was a
-    # subprocess for something nothing rendered.
-    return _page(request, "inbox.html", entries=inbox_mod.entries(), nav="inbox")
 
 
 @app.get("/ui/fetched", response_class=HTMLResponse, include_in_schema=False,

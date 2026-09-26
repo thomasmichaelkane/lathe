@@ -443,6 +443,24 @@ def run_checks(client, auth, srv: Path):
     truthy("nothing just-arrived counts as stuck",
            not any(i["stale"] for i in items))
 
+    before = sorted(p.name for p in (srv / "inbox").iterdir())
+    r = client.post("/inbox/nudge", headers=auth).json()
+    truthy("a nudge starts the import", r["ok"])
+    r = client.post("/inbox/nudge", headers=auth).json()
+    truthy("and pressing it again is harmless", r["ok"])
+    check("leaving the inbox exactly as it was",
+          sorted(p.name for p in (srv / "inbox").iterdir()), before)
+
+    down = srv.parent / "bin" / "systemctl-down"
+    down.write_text("#!/bin/sh\necho inactive\nexit 3\n")
+    down.chmod(0o755)
+    real = os.environ["SYSTEMCTL"]
+    os.environ["SYSTEMCTL"] = str(down)
+    r = client.post("/inbox/nudge", headers=auth)
+    os.environ["SYSTEMCTL"] = real
+    check("with the watcher down, a nudge is refused", r.status_code, 409)
+    truthy("and says how to fix it", "enable --now inbox.path" in r.json()["detail"])
+
     section("the dashboard renders")
     for path, needle in [("/", "librariand"),
                          ("/ui/quarantine", "Quarantine"),
@@ -450,7 +468,6 @@ def run_checks(client, auth, srv: Path):
                          # earlier checks have approved one entry and rejected
                          # another, so which buttons remain depends on state.
                          ("/ui/fetched", "Fetched"),
-                         ("/ui/inbox", "Inbox"),
                          ("/ui/rips", "Result")]:
         resp = client.get(path, headers=auth)
         check(f"{path} returns 200", resp.status_code, 200)
@@ -474,7 +491,11 @@ def run_checks(client, auth, srv: Path):
     truthy("and the drive section Optical drive", "Optical drive" in over.text)
     truthy("with tiles named after the tabs", ">Fetched<" in over.text and ">Ripped<" in over.text)
     truthy("and no top-artists table", "Most albums" not in over.text)
-    truthy("the inbox tab is present", '/ui/inbox' in over.text)
+    truthy("there is no inbox tab", '/ui/inbox' not in over.text)
+    check("or inbox page", client.get("/ui/inbox", headers=auth).status_code, 404)
+    truthy("a non-empty inbox turns its tile", 'class="tile stuck"' in over.text)
+    truthy("which offers the nudge", 'data-action="nudge"' in over.text)
+    truthy("and says how long the oldest has waited", "oldest" in over.text)
     truthy("static assets are served", client.get("/static/style.css").status_code == 200)
 
     section("no-token mode")
@@ -489,7 +510,7 @@ def run_checks(client, auth, srv: Path):
     truthy("the overview says so", "No token set" in page.text)
     # Banners are overview-only. Repeated on every tab, a warning stops being
     # read by the third page.
-    for path in ("/ui/quarantine", "/ui/fetched", "/ui/inbox", "/ui/rips"):
+    for path in ("/ui/quarantine", "/ui/fetched", "/ui/rips"):
         truthy(f"but {path} does not repeat it",
                "No token set" not in open_client.get(path).text)
     os.environ["LIBRARIAND_TOKEN"] = TOKEN

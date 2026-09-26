@@ -185,6 +185,17 @@ ul.notes li { margin: 2px 0; }
 .tile.warn  .n { color: var(--warn); }
 .tile.acid  .n { color: var(--acid); }
 
+/* Inbox holding something: the whole tile turns, not just the number. */
+.tile { position: relative; }
+.tile.stuck { background: #1f1a0e; border-color: #5a4320; border-left: 3px solid var(--warn); }
+.tile.stuck .n { color: var(--warn); }
+.tile .nudge {
+  position: absolute; top: 8px; right: 8px;
+  min-height: 0; padding: 7px; line-height: 0;
+  background: transparent; color: var(--warn); border-color: #5a4320;
+}
+.tile .nudge:hover { background: #2a2410; }
+
 .bar { height: 6px; background: var(--raised); margin-top: 10px; }
 .bar > span { display: block; height: 100%; background: var(--acid); }
 .bar > span.warn  { background: var(--warn); }

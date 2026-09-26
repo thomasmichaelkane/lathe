@@ -42,6 +42,27 @@ class Item:
         return self.age_seconds > STALE_SECONDS
 
 
+NUDGE = ".librariand-nudge"
+
+
+def nudge() -> None:
+    """Start the importer now, by giving inbox.path a change to fire on.
+
+    librariand runs as `music` and cannot `systemctl start` anything, but it
+    can write to /srv, and inbox.path fires on any file created in the inbox.
+    So: create a marker and delete it straight away.
+
+    Idempotent without any bookkeeping here, because systemd supplies it:
+    starting a oneshot unit that is already running is a no-op, so pressing
+    this during an import changes nothing. The marker cannot disturb that
+    import either — inbox-import.sh's settle check looks only below the inbox
+    (`find -mindepth 1`), and the marker is gone long before the unit starts.
+    """
+    marker = INBOX / NUDGE
+    marker.touch()
+    marker.unlink(missing_ok=True)
+
+
 def entries() -> list[Item]:
     """Everything in the inbox, oldest first — the stuck ones float to the top."""
     if not INBOX.is_dir():

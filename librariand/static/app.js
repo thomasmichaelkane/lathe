@@ -37,7 +37,7 @@ async function call(method, url, body) {
  * failure. No optimistic UI — with file moves, a wrong guess about what
  * happened is worse than a reload. */
 async function act(btn, method, url, body, okMsg) {
-  const card = btn.closest(".card, .group");
+  const card = btn.closest(".card, .group, .tile");
   const label = btn.textContent;
   btn.disabled = true;
   card && card.classList.add("spin");
@@ -86,6 +86,9 @@ document.addEventListener("click", (ev) => {
                  { entries, album: a.album || null },
                  "merged and handed back to the inbox");
     }
+
+    case "nudge":
+      return act(btn, "POST", "/inbox/nudge");
 
     case "approve":
       return act(btn, "POST", `/fetched/${name}/approve`, undefined,

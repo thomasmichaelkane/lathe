@@ -38,10 +38,21 @@
     <span class="n">{{ health.rips_needing_attention }}</span>
     <span class="k">Ripped</span>
   </a>
-  <a class="tile" href="/ui/inbox">
+  {# The inbox drains itself within minutes, so anything here at all is worth
+     seeing. The button starts the importer; pressing it mid-import is a no-op. #}
+  <div class="tile {{ 'stuck' if counts.inbox }}">
+    {% if counts.inbox %}
+    <button class="nudge" data-action="nudge" title="Start the import now"
+            aria-label="Start the import now">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+           stroke-width="2.5" stroke-linecap="square" aria-hidden="true">
+        <path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/>
+      </svg>
+    </button>
+    {% endif %}
     <span class="n">{{ counts.inbox }}</span>
-    <span class="k">Inbox</span>
-  </a>
+    <span class="k">Inbox{% if inbox_oldest_min is not none %} · oldest {{ inbox_oldest_min }} min{% endif %}</span>
+  </div>
 </div>
 
 <h2 class="section">Library</h2>
