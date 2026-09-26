@@ -19,6 +19,16 @@ services:
     container_name: navidrome
     restart: unless-stopped
 
+    # Docker's default json-file driver never rotates, and container logs live
+    # under /var/lib/docker — on the boot SD card, not the library drive. Left
+    # alone, Navidrome's log grows on the card until something breaks. 30MB of
+    # history is plenty to debug with.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     # The `music` user (Phase 0) owns all of /srv. Navidrome runs as it rather
     # than root so the one writable mount below can't be used to write anything
     # root-owned into the library drive.

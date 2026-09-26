@@ -183,10 +183,11 @@ deployed_targets() {
   done
 
   printf '%s\n' /etc/udev/rules.d/99-autorip.rules
+  printf '%s\n' /etc/systemd/journald.conf.d/lathe.conf
 
   for f in "$REPO"/librariand/*.py; do
     case "$(basename "$f")" in
-      librariand_test.py) continue ;;   # test-only, never deployed
+      *_test.py) continue ;;   # test-only, never deployed — same rule as the deploy loop
     esac
     printf '%s\n' "$LIBRARIAND_DIR/$(basename "$f")"
   done
@@ -408,8 +409,15 @@ done
 # file is renamed into place, and nothing here is ever edited in situ.
 say "librariand ($LIBRARIAND_DIR):"
 librariand_changed=0
-for rel in app.py quarantine.py fetched.py rips.py resolve.py system.py; do
-  if install_file "$REPO/librariand/$rel" "$LIBRARIAND_DIR/$rel" 0644 root:root; then
+# Globbed, not listed. This was a hand-written list of six modules, and when
+# inbox.py was added it was never added here — so librariand would have died on
+# `import inbox` the first time it started on the Pi. Deriving the list from the
+# directory, the same way deployed_targets() does, means a new module cannot be
+# forgotten. The test file is the one .py that must never ship.
+for f in "$REPO"/librariand/*.py; do
+  rel="$(basename "$f")"
+  case "$rel" in *_test.py) continue ;; esac
+  if install_file "$f" "$LIBRARIAND_DIR/$rel" 0644 root:root; then
     librariand_changed=1
   fi
 done
@@ -474,6 +482,15 @@ done
 say "udev rule:"
 if install_file "$REPO/systemd/99-autorip.rules" /etc/udev/rules.d/99-autorip.rules 0644 root:root; then
   UDEV_CHANGED=1
+fi
+
+# The journal cap. One of the few things still writing to the boot SD card
+# once /srv holds the library and every database.
+say "journald cap:"
+JOURNALD_CHANGED=0
+if install_file "$REPO/systemd/journald.conf.d/lathe.conf" \
+     /etc/systemd/journald.conf.d/lathe.conf 0644 root:root; then
+  JOURNALD_CHANGED=1
 fi
 
 # Shared by autorip@.service and inbox-import.service. Holds a live ntfy topic
@@ -573,6 +590,14 @@ if [ "$UDEV_CHANGED" -eq 1 ]; then
   say "reloading udev"
   udevadm control --reload
   udevadm trigger --subsystem-match=block
+fi
+
+# A restart applies the new cap and trims the journal down to it straight away.
+# Safe on a live system: journald re-attaches to its sockets and nothing that
+# is logging notices.
+if [ "${JOURNALD_CHANGED:-0}" -eq 1 ]; then
+  say "restarting systemd-journald"
+  systemctl restart systemd-journald
 fi
 
 say ""
