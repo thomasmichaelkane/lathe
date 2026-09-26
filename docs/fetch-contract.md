@@ -45,6 +45,28 @@ Two rules, and everything downstream depends on them:
 
 Together these mean no locking is needed anywhere in either repo.
 
+### Ownership
+
+`lathe` acts on a fetched directory as the `music` user: approving it
+*renames the directory itself* into `/srv/inbox/`, and beets later moves the
+files out of it. Moving a directory to a new parent needs write permission on
+that directory, not just on its parent, so a directory the producer leaves as
+`tom:tom 0755` cannot be approved at all — the dashboard's approve fails with
+permission denied.
+
+So the producer must leave everything it writes **writable by the `music`
+group**. Either of these satisfies it:
+
+- **Run as `music`.** Nothing else to arrange.
+- **Run as a human account in the `music` group, with `umask 002`.**
+  `install.sh` makes `/srv/staging/fetched/` setgid `music`, so what is
+  created under it inherits the group; the umask is what makes that group
+  able to write. The default `022` gives the group read-only.
+
+If the producer assembles the directory elsewhere and moves it in (rule 1
+above), the setgid bit does not apply to it — set the group explicitly
+before the move.
+
 ### Why not `/srv/inbox/`
 
 `/srv/inbox/` is watched by a systemd path unit that imports immediately.

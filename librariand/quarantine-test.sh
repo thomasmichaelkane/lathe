@@ -273,6 +273,13 @@ echo
 echo "drop"
 check      "drop refuses without --yes" not_q drop "Dupe Album"
 check      "the entry survived the refusal" test -d "$QUARANTINE/Dupe Album"
+# pathlib does not collapse "..", so QUARANTINE/".." used to pass the parent
+# check while pointing at /srv — and drop would rmtree the whole library.
+check      "drop refuses '..'"              not_q drop --yes ".."
+check      "and the tree above survived"    test -d "$QUARANTINE"
+check      "retry refuses '..'"             not_q retry ".."
+check      "merge refuses '..'"             not_q merge ".." "Dupe Album"
+check      "a hidden .merge-* name is not an entry" not_q drop --yes ".merge-1"
 check      "drop --yes deletes"             q drop --yes "Dupe Album"
 check      "the entry is gone"              missing "$QUARANTINE/Dupe Album"
 

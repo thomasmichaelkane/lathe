@@ -563,7 +563,22 @@ class QuarantineError(RuntimeError):
 
 
 def _resolve(name: str) -> Path:
+    """Turn an entry name into a path, refusing anything outside QUARANTINE.
+
+    The name arrives straight off an HTTP path segment, so it is untrusted.
+    `p.parent != QUARANTINE` alone is not enough: pathlib does not collapse
+    `..`, so QUARANTINE / ".." has QUARANTINE as its parent while pointing at
+    /srv itself — and `drop` would then rmtree the library. Hidden names are
+    refused too; they are .merge-* work directories, never entries.
+    """
+    if (not name or name.startswith(".") or "/" in name or "\\" in name
+            or "\0" in name):
+        raise QuarantineError(f"invalid entry name: {name!r}")
     p = QUARANTINE / name
+    try:
+        p.resolve().relative_to(QUARANTINE.resolve())
+    except ValueError:
+        raise QuarantineError(f"entry is outside {QUARANTINE}: {name!r}") from None
     if p.parent != QUARANTINE or not p.exists():
         raise QuarantineError(f"no such quarantine entry: {name}")
     return p

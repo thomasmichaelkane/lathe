@@ -87,8 +87,8 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         )
     if shutil.which(BEET) is None:
         raise QuarantineError(
-            f"{BEET} is not on PATH. librariand runs as the `music` user; beets "
-            f"is installed per-user with uv, so it must be on that user's PATH."
+            f"{BEET} is not on PATH. install.sh links it into /usr/local/bin "
+            f"from its venv at /usr/local/lib/beets — re-run install.sh."
         )
 
     cmd = [BEET, "-c", str(BEETS_CONFIG), "-P", disable,

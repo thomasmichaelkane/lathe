@@ -296,9 +296,21 @@ hasnt "a commented-out setting counts as seen"             "    NAVIDROME_PASS" 
 hasnt "settings you have are not listed"                   "    NTFY_URL"       "$OUT"
 check "and your file is not touched" "$(sha256sum "$ENVF")" "$before"
 
-echo "LIBRARIAND_TOKEN=abc" >> "$ENVF"
+echo "LIBRARIAND_TOKEN=" >> "$ENVF"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$ENVF"
+has   "an empty librariand token is warned about" "LIBRARIAND_TOKEN is empty" "$OUT"
+has   "naming the LAN, not only the tailnet"      "home LAN"                  "$OUT"
+
+sed -i 's/^LIBRARIAND_TOKEN=$/LIBRARIAND_TOKEN=abc/' "$ENVF"
 run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$ENVF"
 hasnt "once complete, nothing is flagged" "lacks setting" "$OUT"
+hasnt "and a set token is not nagged about" "LIBRARIAND_TOKEN is empty" "$OUT"
+
+echo
+echo "a fresh /etc/default/lathe is not open by default"
+
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$TMP/absent.env"
+has "it would be created with a token" "with a generated LIBRARIAND_TOKEN" "$OUT"
 
 echo
 echo "system packages"

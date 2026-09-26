@@ -686,6 +686,24 @@ def run_checks(client, auth, srv: Path):
     truthy("a path-traversal name is refused", r.status_code >= 400 or
            r.json().get("ok") is False)
 
+    # The one that mattered: a bare "..", percent-encoded so no client
+    # normalises it away. It used to resolve to /srv itself, and DELETE would
+    # have removed the library.
+    for label, call in (
+        ("DELETE", lambda: client.delete("/quarantine/%2E%2E", headers=auth)),
+        ("retry", lambda: client.post("/quarantine/%2E%2E/retry?dry_run=true",
+                                      headers=auth)),
+        ("resolve", lambda: client.post(
+            "/quarantine/%2E%2E/resolve", headers=auth,
+            json={"identifier": "1a2b3c4d-1a2b-1a2b-1a2b-1a2b3c4d5e6f",
+                  "dry_run": True})),
+    ):
+        r = call()
+        truthy(f"{label} of '..' is refused", r.status_code >= 400 and
+               r.json().get("ok") is False)
+    truthy("and /srv is still all there", (srv / "quarantine").is_dir()
+           and (srv / "inbox").is_dir())
+
     section("quarantine — resolve")
     r = client.post("/quarantine/The Wall (Disc 1)/resolve", headers=auth,
                     json={"identifier": "not-an-id"})
@@ -760,6 +778,27 @@ def run_checks(client, auth, srv: Path):
     check("a clean rip needs no attention", rs["discid1"]["needs_attention"], False)
     check("no rip is in progress", data["current"], None)
 
+    # autorip.sh works in $RIPS/.work/<disc id>.<pid>; the old lookup read
+    # the top of $RIPS and so only ever reported ".work".
+    busy = srv.parent / "bin" / "systemctl-ripping"
+    busy.write_text("#!/bin/sh\n"
+                    "echo 'autorip@sr0.service loaded active running Auto-rip'\n")
+    busy.chmod(0o755)
+    work = srv / "staging" / "rips" / ".work" / "abcDEF-123_.4242"
+    work.mkdir(parents=True)
+    import rips as rips_mod   # SYSTEMCTL is read once, at import
+    real = rips_mod.SYSTEMCTL
+    rips_mod.SYSTEMCTL = str(busy)
+    try:
+        cur = client.get("/rips", headers=auth).json()["current"]
+    finally:
+        rips_mod.SYSTEMCTL = real
+    shutil.rmtree(work.parent)
+    check("a running rip names its device", cur and cur["device"], "sr0")
+    check("and the work directory under .work", cur and cur["working_dir"],
+          "abcDEF-123_.4242")
+    check("and the disc it is reading", cur and cur["disc_id"], "abcDEF-123_")
+
     page = client.get("/ui/rips", headers=auth)
     truthy("the log shows pass/fail", "passed" in page.text and "failed" in page.text)
     truthy("and no inbox/quarantine state", "in the inbox" not in page.text.lower())
@@ -790,6 +829,13 @@ def run_checks(client, auth, srv: Path):
            "20260819T142305Z-clean" in names)
     truthy("nothing just-arrived counts as stuck",
            not any(i["stale"] for i in items))
+    # Everything arrives by rename, which keeps the files' old mtimes. An
+    # album last touched in 2019 has still only just arrived.
+    old = srv / "inbox" / "Waiting Album"
+    os.utime(old, (1546300800, 1546300800))
+    item = next(i for i in client.get("/inbox", headers=auth).json()["entries"]
+                if i["name"] == "Waiting Album")
+    truthy("an old album moved in just now is not stuck", not item["stale"])
 
     before = sorted(p.name for p in (srv / "inbox").iterdir())
     r = client.post("/inbox/nudge", headers=auth).json()

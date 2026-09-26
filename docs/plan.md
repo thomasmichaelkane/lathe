@@ -4,7 +4,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 
 **Names:** the Android app is **Deadwax**; the Pi-side repo is **lathe**. See §14 for components, repos, and conventions.
 
-**Status:** Planning complete. Ready for implementation.
+**Status:** Phase −1 built and tested; 0.1.0 is the first release deployed to the Pi (Phase 0).
 **Target:** Hand to Claude Code, phase by phase.
 
 ---
@@ -62,7 +62,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
 | Single-board computer | Raspberry Pi 5, **4GB** | $100–120 |
 | Power supply | Official 27W USB-C PD | $14 |
 | Case + cooling | Argon NEO 5 M.2 NVMe (case + cooler + NVMe slot in one) | $40–50 |
-| Boot drive | 256GB NVMe M.2 2280 SSD | $40–60 |
+| Boot drive | 256GB NVMe M.2 2280 SSD — **bought, and not used**: the Pi boots from SD (§11 Phase 0) | $40–60 |
 | Library drive | 4TB USB 3 **desktop** HDD, own power brick (WD Elements Desktop / Seagate Expansion Desktop) | $100–115 |
 | Optical drive | Any external USB CD/DVD drive | $25–35 |
 | Powered USB 3 hub | 4-port with its own 12V supply | $30 |
@@ -102,6 +102,7 @@ Prices are USD, approximate, as of August 2026. **The memory/storage shortage is
   staging/
     rips/           # abcde output lands here, then moves to /srv/inbox/ (§6.2)
     fetched/        # completed downloads land here, awaiting human review (see docs/fetch-contract.md)
+    torrents/       # aria2's downloads, moved to the inbox from the Fetch tab (docs/torrents.md)
     incoming/       # rsync landing area for uploads. UNWATCHED — see §6.5
   quarantine/       # beets could not confidently match these
   inbox/            # manual drops: Bandcamp, purchases, existing collection
@@ -186,13 +187,14 @@ What is worth stating here, because it is decision rather than syntax:
 - **`librariand` is not in compose at all.** It runs as a systemd service on
   the host instead — `systemd/librariand.service`, deployed by `install.sh`
   like everything else. It moved out of compose because
-  `/quarantine/{id}/resolve` re-runs a beets import, and beets is installed
-  per-user with `uv` on the host; a container would have had to ship its own
-  beets, which is two installs to keep in step and one of them writing to the
-  library. Running on the host also means no Dockerfile and no image to rebuild
+  `/quarantine/{id}/resolve` re-runs a beets import against the beets
+  `install.sh` puts in a venv on the host; a container would have had to ship
+  its own beets, which is two installs to keep in step and one of them writing
+  to the library. Running on the host also means no Dockerfile and no image to rebuild
   when a template changes.
-- **`ND_ENABLETRANSCODINGCONFIG` starts on and must be turned off** — see
-  below.
+- **`ND_ENABLETRANSCODINGCONFIG` is off, and stays off** — see below.
+- **The image is pinned** (`0.63.2`, the version every Navidrome measurement in
+  this plan was taken on). Bump it in a commit, deliberately.
 - **`ND_SCANSCHEDULE` is 6h and `ND_SESSIONTIMEOUT` is 720h.** The first is a
   backstop behind the filesystem watcher and the rescan poke `inbox-import.sh`
   sends (§6.4) — it is the worst case for a new album appearing, not the
@@ -204,10 +206,21 @@ Deliberately **no reverse proxy in v1** — Tailscale handles access and there's
 ### Navidrome settings to set after first boot
 
 - Create your user account (first user created becomes admin).
-- **Transcoding:** enable Opus 128k as a downsample option, so clients can request the original FLAC on WiFi and 128k Opus on cellular.
+- **Transcoding: nothing to do.** Opus 128k is one of Navidrome's built-in
+  transcodings (`consts.DefaultTranscodings`, checked on 0.63.2), so a client
+  can request the original FLAC on WiFi and 128k Opus on cellular out of the
+  box.
 - **ListenBrainz:** add your token under user settings.
 - **Scan schedule:** every 6h plus the filesystem watcher. The rip pipeline also pokes a rescan directly when it finishes, so new discs show up in seconds, not hours.
-- **Then turn `ND_ENABLETRANSCODINGCONFIG` back off.** That flag exists to let the web UI define transcoding *commands*, which is effectively remote command execution by design. It's acceptable on a single-user tailnet, but it only needs to be on for the few minutes it takes to configure Opus. Set it to `"false"` afterwards and redeploy.
+
+**`ND_ENABLETRANSCODINGCONFIG` stays off.** That flag lets the web UI define
+transcoding *commands*, which is remote command execution by design, and the
+earlier plan had it on at first boot to configure Opus — which turned out to be
+built in. It is also why the compose file must not be edited on the Pi to flip
+it: that dirties the checkout, and `install.sh` refuses a dirty checkout. If
+you ever need to edit a transcoding, put `ND_ENABLETRANSCODINGCONFIG=true` in
+`compose/.env` (gitignored), `docker compose up -d`, make the change, delete
+the line and bring it up again.
 
 ---
 
@@ -334,126 +347,26 @@ what `handoff_path` in the disc log exists to let `librariand` reconstruct later
 
 ### 6.3 Tag — beets
 
-`/srv/config/beets/config.yaml`:
+**The config is `ingest/beets/config.yaml`, deployed to
+`/srv/config/beets/config.yaml`. It is not reproduced here** — for the same
+reason §5 gives for the compose file. An inline copy used to live here and had
+already drifted: it lacked the pinned `statefile` and the `quarantine_match`
+plugin. Every load-bearing line is commented in the file itself. The ones this
+section keeps referring to:
 
-```yaml
-directory: /srv/music
-library: /srv/config/beets/library.db
+| Setting | Why it matters |
+|---|---|
+| `import.quiet_fallback: skip` | Never guess — leave an uncertain album where it is |
+| `import.incremental_skip_later: yes` | Without it, pass 2 of the cascade silently imports nothing |
+| `match.strong_rec_thresh: 0.04` | A **distance**: lower is stricter |
+| `match.max_rec.missing_tracks: low` | Why a lone disc of a set can never auto-import (§6.3a) |
+| `plugins:` including `musicbrainz`, `bandcamp` | beets 2.x has no implicit metadata source |
+| `item_fields.multidisc` + the `paths:` templates | One folder per disc |
+| `fetchart.filename: cover` | One `cover.jpg` per album |
+| `zero:` with unanchored patterns and plural fields | Strips bandcamp.com URLs out of MusicBrainz ID tags |
+| `statefile:` | Pinned under `/srv/config/beets`, next to `library.db` |
 
-import:
-  move: yes
-  quiet: yes
-  quiet_fallback: skip     # the safety valve — never guess, leave it in place
-  incremental: yes
-  # LOAD-BEARING, and coupled to the two-pass import in inbox-import.sh.
-  # At its default (`no`), beets records SKIPPED directories to the incremental
-  # history as well as imported ones (importer/tasks.py, ImportTask.finalize).
-  # Pass 1 (MusicBrainz) would therefore mark everything it could not match as
-  # "seen", and pass 2 (Bandcamp) would skip all of it — the second pass would
-  # silently do nothing while still exiting 0. Do not set this back to `no`
-  # without collapsing the cascade back to a single pass.
-  incremental_skip_later: yes
-  log: /srv/logs/beets-import.log
-
-match:
-  # DISTANCE threshold, not a confidence score: beets auto-accepts matches
-  # scoring BELOW this value. Lower is stricter. 0.04 is the beets default.
-  # Do NOT raise this thinking it tightens the filter — it loosens it.
-  strong_rec_thresh: 0.04
-  max_rec:
-    missing_tracks: low
-    unmatched_tracks: low
-
-# 'musicbrainz' is load-bearing: beets 2.x moved MB matching out of core and
-# into a plugin. Omit it and every import silently finds no match and falls
-# through to quiet_fallback: skip. It was implicit in 1.6.
-# Both metadata sources are listed here, but inbox-import.sh never runs them
-# together: it imports twice, disabling one each time with `beet -P`, so
-# MusicBrainz gets first refusal and Bandcamp only sees what it could not
-# match. See the cascade note in docs/plan.md 6.3 for why.
-#
-# 'bandcamp' (beetcamp) is not optional for a download-based collection:
-# Bandcamp edits, bootlegs and unofficial remixes are largely absent from
-# MusicBrainz and can never match without it.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url
-
-# Local plugin dir. beets resolves pluginpath against the CWD, not the config
-# directory, so it must be absolute — the test overlay replaces this the same
-# way it replaces `directory` and `library`.
-pluginpath:
-  - /srv/config/beets/plugins
-
-# Splits multi-disc sets into one release per disc.
-# Returns '' rather than 0 for single-disc releases: %if{} treats the empty
-# string as unambiguously false, whereas how it coerces the string "0" is a
-# beets-version detail the library layout must not depend on.
-item_fields:
-  multidisc: 1 if disctotal > 1 else ''
-
-# No `singleton:` template. Nothing in the pipeline ever passes `beet import
-# -s`, so it was unreachable; and a singleton files with no cover.jpg, which
-# breaks the one-folder-one-cover rule. A single is a one-track *release* and
-# goes through `default:` like everything else.
-paths:
-  default: $albumartist/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
-  comp: Various Artists/$album%aunique{}%if{$multidisc, (Disc $disc)}/$track $title
-
-fetchart:
-  auto: yes
-  cautious: yes
-  sources:                # beets 2.x requires list form here;
-    - filesystem         # the old space-separated string is rejected
-    - cover_art_url      # beetcamp sets album.cover_art_url; this core source
-                         # consumes it. beetcamp's own 'Bandcamp' source is NOT
-                         # a valid key here — fetchart rejects it at startup.
-    - coverart
-    - itunes
-    - albumart
-  filename: cover        # always cover.jpg — one image, one name
-
-replaygain:
-  auto: yes
-  backend: ffmpeg
-
-scrub:
-  auto: yes
-
-# Strip MusicBrainz ID fields that do not contain a MusicBrainz ID.
-#
-# beets maps whatever ID a metadata source supplies onto mb_albumid
-# (autotag/hooks.py: "album_id": "mb_albumid"), so Bandcamp-sourced releases
-# arrive with bandcamp.com URLs in MUSICBRAINZ_ALBUMID, MUSICBRAINZ_TRACKID,
-# MUSICBRAINZ_ARTISTID and the rest. Those fields are UUIDs by definition and
-# Navidrome forwards them to ListenBrainz as MBIDs, so the URL is wrong data
-# leaving the house. There is no MusicBrainz ID for a release MusicBrainz does
-# not have, so the honest value is none at all — the URL itself is preserved in
-# BANDCAMP_ALBUM_URL/BANDCAMP_TRACK_URL by the bandcamp_url plugin.
-#
-# Two things here are easy to get wrong and both fail silently:
-#
-#   1. The patterns are UNANCHORED. beets 2.x made the artist-ID fields
-#      multi-valued; '^https?://' does not match the stringified list, so the
-#      tag survives while the config looks correct.
-#   2. The PLURAL fields must be listed too. mediafile writes
-#      MUSICBRAINZ_ARTISTID from mb_artistids, so zeroing only mb_artistid
-#      leaves the tag in place.
-#
-# update_database stays at its default (off) on purpose: library.db keeps the
-# URL in mb_albumid, which is what makes it available for re-resolution.
-zero:
-  fields: mb_albumid mb_albumartistid mb_albumartistids mb_artistid mb_artistids mb_trackid mb_releasetrackid mb_releasegroupid mb_workid
-  mb_albumid: ['https?://']
-  mb_albumartistid: ['https?://']
-  mb_albumartistids: ['https?://']
-  mb_artistid: ['https?://']
-  mb_artistids: ['https?://']
-  mb_trackid: ['https?://']
-  mb_releasetrackid: ['https?://']
-  mb_releasegroupid: ['https?://']
-  mb_workid: ['https?://']
-```
-
-**`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `inbox-import.sh` then sweeps whatever is still sitting in `/srv/inbox/` into `/srv/quarantine/` for later review — one sweep, covering rips and manual drops alike, because by this point they are indistinguishable (§6.5).
+**`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `inbox-import.sh` then sweeps what it declined into `/srv/quarantine/` for later review — one sweep, covering rips and manual drops alike, because by this point they are indistinguishable (§6.5).
 
 ### The library rules these paths enforce
 
@@ -904,11 +817,36 @@ not at all. Same principle as `farfetchd` writing `fetch.json` last.
 before importing, as a safety net for the times something gets copied in
 directly. Belt and braces, because the failure is silent and costs a re-file.
 
+**Each run works on a snapshot.** After the settle wait, `inbox-import.sh`
+lists what is in the inbox, passes exactly those items to both beets passes,
+and sweeps exactly those. It used to import the whole directory and sweep
+whatever was left, which quarantined anything that arrived *during* a long
+import without beets ever seeing it — and `PathChanged` does not fire again
+once the service finishes. Now, if anything new is in the inbox at the end,
+the script simply runs again.
+
+**Leftover clutter is not a failed import.** beets moves the audio and leaves
+everything else: a `.cue`, an EAC `.log`, an `.m3u`, `Front.jpg`, the
+`fetch.json` every approved fetch carries. Its `clutter` setting only covers
+`Thumbs.DB` and `.DS_Store`. So the sweep distinguishes three cases per item:
+gone (imported and pruned), *had audio and now has none* (imported — the
+leftovers are deleted, listed in the log, and it counts as imported), and
+*still has audio* (declined — quarantine). An item that never had audio, such
+as a folder of `.rar` files, is quarantined rather than deleted, because
+nothing imported it.
+
 **Ownership.** You upload as `tom`; beets runs as `music` and needs to *move
 and delete* those files, not just read them. `push-music.sh` passes
 `--chmod=Dg+rwxs,Fg+rw` so they arrive group-writable, which requires `tom` to
 be in the `music` group and the staging directories to be setgid (Phase 0).
 Without this the import fails on permissions.
+
+It also passes **`--no-group`**, and that one is easy to lose. `rsync -a`
+includes `-g`, which sets every file's group to the one it had on the laptop —
+and since `tom` is a member of the `tom` group on the Pi too, rsync is allowed
+to, overriding the setgid inheritance on every file and folder. The upload
+succeeds, and the import fails later, because `music` cannot move files out
+of a `tom:tom` folder or rename it into quarantine.
 
 **Set expectations:** albums off a computer are messier than CD rips — mixed
 formats, embedded art, junk files, tags from whatever ripped them years ago.
@@ -1093,7 +1031,7 @@ Related: run `beet fetchart --quiet` periodically to backfill art, and `beet mis
 **Tailscale on the Pi and the phone.** That's it for v1.
 
 - `tailscale up --ssh` gives you SSH access too.
-- MagicDNS means the server is reachable at a stable name like `http://pi:4533` from anywhere.
+- MagicDNS means the server is reachable at a stable name like `http://lathe:4533` from anywhere.
 - No ports forwarded, no dynamic DNS, no certificate management, no attack surface.
 
 **Wired ethernet, not WiFi.** Free reliability.
@@ -1172,7 +1110,7 @@ and nothing here may come to depend on them.
 
 What this server owes it is only what it owes any client: a spec-compliant
 OpenSubsonic endpoint, one `cover.jpg` per folder (§6.6), correct `albumtype` and
-`discNumber` tags out of beets (§6.3), Opus transcoding enabled, and a long
+`discNumber` tags out of beets (§6.3), Opus transcoding (built into Navidrome), and a long
 `ND_SESSIONTIMEOUT` (§5).
 
 The one thing worth knowing on this side: **Deadwax implements no scrobbling.**
@@ -1188,11 +1126,13 @@ Stack, screens, API surface, visual direction and build phases live in
 
 ## 10. Custom service (`librariand`)
 
-FastAPI. Reachable only over Tailscale. Simple bearer token on top of that.
+FastAPI, with a bearer token. **Not** only reachable over Tailscale, whatever
+an earlier draft of this section said: it listens on every interface, so it
+answers on the home LAN too — which is why the token is on by default.
 
-**Built and tested.** `librariand/` holds the service; `librariand-test.sh` is
-80 checks against a fabricated `/srv`. Run it with
-`sudo systemctl start librariand` and open port 8080 over the tailnet.
+**Built and tested.** `librariand/` holds the service; `librariand-test.sh`
+runs it against a fabricated `/srv`. `install.sh` enables it; open port 8080
+over the tailnet.
 
 Two things about how it runs:
 
@@ -1200,10 +1140,11 @@ Two things about how it runs:
   that is not in compose.
 - **Auth is a bearer token in `LIBRARIAND_TOKEN`** (`/etc/default/lathe`),
   accepted either as an `Authorization` header for the API or as a cookie set
-  by a one-off login form for the dashboard. Leaving it unset runs the
-  dashboard open, which is defensible on a tailnet with no exposed ports — so
-  it is allowed, and every page carries a banner saying so rather than letting
-  you forget.
+  by a one-off login form for the dashboard. `install.sh` generates one when it
+  first creates that file. Blanking it runs the dashboard open — to the home
+  LAN as well as the tailnet — which is allowed, but every page carries a
+  banner and every deploy a warning. To keep it off the LAN entirely, set
+  `LIBRARIAND_HOST` to the Pi's Tailscale address.
 
 **Deferred, deliberately.** `/rips/current` reports only whether a rip unit is
 running, and `/events` (SSE per-track progress) is not built: real progress
@@ -1407,15 +1348,19 @@ failure that is silent:
   deployed and disabled, which looks identical to working until you notice
   nothing is listening. Units are also restarted when their file changes, and
   `librariand` additionally when only its code changed.
-- **`librariand`'s dependencies are a venv** at
-  `/usr/local/lib/librariand/venv`, built once. This is the only step that
-  touches the network, so it is guarded and never fatal: with no internet the
-  rest of the deploy still completes and only librariand fails to start.
+- **The network steps are never fatal** — apt, the beets venv and
+  librariand's venv. With no internet the rest of the deploy still completes;
+  librariand is enabled but fails to start, with a warning, until a later run
+  gets through.
+- **udev rules are reloaded, never re-triggered.** `udevadm trigger`'s default
+  action is `change`, which is exactly what the autorip rule listens for: with
+  a CD in the tray, a deploy would start a rip.
 
-`/etc/default/lathe` is created once with everything unset and never
-overwritten. It holds the ntfy topic and the Navidrome login, is 0600
-root-owned, and is shared by `autorip@.service` and `inbox-import.service` —
-one topic for the whole system, set once. Nothing in it is required: unset
+`/etc/default/lathe` is created once and never overwritten — with a generated
+`LIBRARIAND_TOKEN` and everything else unset. It holds the ntfy topic, the
+Navidrome login and that token, is 0600 root-owned, and is shared by
+`autorip@.service`, `inbox-import.service` and `librariand.service` — one
+topic for the whole system, set once. Nothing else in it is required: unset
 means the notification or the rescan is skipped and logged, never that an
 import fails.
 
@@ -1510,15 +1455,13 @@ Keep at least one of each shape.
 
 Broken cases are **synthesised, not sourced** — strip tags off a copy to exercise `quiet_fallback: skip`, scatter `.cue`/`.nfo`/`Thumbs.db` to give `lint.py` something to find. Synthetic is better: you control exactly what's wrong. **Still missing**, along with the matching EP above.
 
-**One untested interaction, worth doing next.** Real downloads ship junk beside
-the audio — the White Album folder carried `.m3u`, `Front.jpg`, `Jolly
-Roger.png`, `spek.png` and `DR10.txt`. beets' `clutter` setting only covers
-`Thumbs.DB` and `.DS_Store`, so everything else is left behind in the inbox
-folder after a successful import — and `inbox-import.sh` sweeps *any* remaining
-directory into quarantine. That reads as though the album failed when it
-imported perfectly. Not yet observed, because the album under test quarantined
-before reaching that branch; reproduce it with an album that matches cleanly and
-has junk beside it.
+**Junk beside the audio — handled, 2026-09-26.** Real downloads ship it: the
+White Album folder carried `.m3u`, `Front.jpg`, `Jolly Roger.png`, `spek.png`
+and `DR10.txt`. beets leaves all of that behind after a successful import, and
+the sweep used to quarantine the folder as though the album had failed. It now
+clears leftovers from an item whose audio beets took (§6.5). Covered by
+`inbox-import-test.sh` with beets stubbed; still worth watching once on a real
+album that matches cleanly with junk beside it.
 
 **c) Deadwax is unblocked, and tracked in its own repo**
 
@@ -1614,8 +1557,8 @@ happens when one thing is written down twice.
   setgid bits, and deploys everything in the copy table. Nothing downstream
   works without it: the beets config every import reads only reaches
   `/srv/config/beets/config.yaml` by being deployed.
-- **Fill in `/etc/default/lathe`**, which `install.sh` has just created empty at
-  0600: `NTFY_URL` for phone pushes, and `NAVIDROME_URL`/`USER`/`PASS` once
+- **Fill in `/etc/default/lathe`**, which `install.sh` has just created at 0600
+  with a generated librariand token: `NTFY_URL` for phone pushes, and `NAVIDROME_URL`/`USER`/`PASS` once
   Phase 1 has created the account. Both are optional — unset means that step is
   skipped and logged, never that an import fails.
 - **Done when:** you can SSH in over Tailscale from your phone's hotspot, and
@@ -1634,7 +1577,7 @@ happens when one thing is written down twice.
   meaningful quarantine pile on the first pass and budget an evening for
   working through it — `librariand/quarantine.py` (§6.5a) is the tool for that
   evening, and it needs neither `librariand` nor the optical drive.
-- Create account, configure transcoding, connect ListenBrainz, then turn `ND_ENABLETRANSCODINGCONFIG` back off
+- Create account, connect ListenBrainz. Transcoding needs nothing (§5)
 - **Done when:** music plays in a desktop browser and in a stock Subsonic client on your phone over Tailscale
 
 > At this point the system is genuinely useful. Everything after is upgrade.
@@ -1643,6 +1586,14 @@ happens when one thing is written down twice.
 - Install `abcde`, `flac` and `cdparanoia` from apt. **beets and its plugins
   are already there** — `install.sh` installed them in Phase 0, pinned, and
   `beets-check.sh` proved every plugin loads as `music`.
+- **Two things the rip path needs that nothing does yet** — deliberately left
+  until ripping is picked up, and noted so they are not found the hard way:
+  - `music` must be in the **`cdrom` group** to open `/dev/sr0` — for abcde,
+    for autorip's eject, and for librariand's `/eject`.
+  - **`python3-libdiscid`**. Without it `autorip.sh` falls back to a
+    `freedb-` disc ID, which cannot be looked up on MusicBrainz, so
+    `quarantine.py groups` never reaches `certain`. autorip runs it with the
+    system `python3`, so it is the apt package, not a pip install.
 - ~~Write `/etc/abcde.conf` and beets config~~ — both deployed by `install.sh`
 - Rip one CD by hand, import by hand, confirm it lands correctly and appears in Navidrome
 - **Done when:** one album has gone disc → library with correct tags and art
@@ -1714,6 +1665,7 @@ which Phase 1 already provides.
 - **Never let `autorip.sh` run beets itself.** The disc ID makes the match easy and inlining the import is tempting, but it duplicates `inbox-import.sh`'s settle wait, quarantine sweep and cleanup, and leaves two beets invocations to drift apart. Rip, move into `/srv/inbox/`, stop.
 - **The hand-off into `/srv/inbox/` must be a rename, not a copy.** It only is one while `/srv/staging` and `/srv/inbox` are on the same filesystem. Mount either separately and `mv` silently becomes copy-then-delete, the path unit fires partway through, and albums get imported half-written — the exact failure the atomic move exists to prevent.
 - **Never rsync directly into `/srv/inbox/` either.** The path unit fires on the first change, so a long copy gets imported half-finished. Stage in `/srv/staging/incoming/` and move — that's what `push-music.sh` does.
+- **`rsync -a` defeats setgid.** Its `-g` resets each file's group to the laptop's, and you are in your own group on the Pi too, so it is allowed to. Uploads then land `tom:tom` and beets, as `music`, cannot move them. `push-music.sh` passes `--no-group`; anything else uploading needs it as well.
 - **`find -newermt "-120 seconds"` is a GNU extension.** Other `find` implementations reject it, and if the error is suppressed the result reads as "nothing changed recently" — so a settle-check built on it silently concludes the copy has finished and imports mid-write. Use a reference file with POSIX `-newer`, and don't suppress the error.
 
 ---
@@ -1789,15 +1741,18 @@ target is a real repo boundary; a different subdirectory is not.
 
 ```
 lathe/
-  compose/          docker-compose.yml, Navidrome env
-  ingest/           autorip.sh, abcde.conf, beets config
-  lint/             lint.py
-  librariand/        FastAPI service
+  install.sh        the only thing that writes to system paths (§11)
+  lathe.env.example seeds /etc/default/lathe
+  compose/          docker-compose.yml, plus aria2 + gluetun for torrents
+  ingest/           autorip.sh, inbox-import.sh, abcde.conf, beets config + plugins
+  librariand/       FastAPI service
     quarantine.py   quarantine review + multi-disc merge — CLI and library
-    dashboard/      web UI for quarantine + violations
-  systemd/          units, timers, udev rules
-  docs/             this plan
+    templates/, static/   the dashboard
+  systemd/          units, udev rule, journald cap
+  docs/             this plan, the runbook, the fetch contract, torrents
 ```
+
+`lint/` (§6.6) is still to come.
 
 All Python, one deployment target, versioned together.
 

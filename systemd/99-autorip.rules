@@ -1,8 +1,9 @@
 # Trigger a rip when an audio CD is inserted.
 #
-# Deployed to /etc/udev/rules.d/99-autorip.rules, then:
-#   sudo udevadm control --reload
-#   sudo udevadm trigger --subsystem-match=block
+# Deployed to /etc/udev/rules.d/99-autorip.rules by install.sh, which runs
+#   udevadm control --reload
+# and deliberately no `udevadm trigger`: its default action is "change", so
+# replaying events with a CD in the tray would start a rip.
 #
 # ACTION=="change" is correct here, not "add": the drive itself appears at boot,
 # and it is the media insertion that raises a change event.

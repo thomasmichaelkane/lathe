@@ -4,13 +4,17 @@
 # triggered by udev, a path unit or a timer (§14).
 #
 # Runs on the host rather than in a container, unlike Navidrome. §5 explains
-# why: /quarantine/{id}/resolve re-runs a beets import, and beets is installed
-# per-user with uv on this machine. A container would have had to ship its own
-# beets — two installs to keep in step, one of which writes to the library.
+# why: /quarantine/{id}/resolve re-runs a beets import against the beets that
+# install.sh puts in /usr/local/lib/beets. A container would have had to ship
+# its own beets — two installs to keep in step, one of which writes to the
+# library.
 
 [Unit]
 Description=librariand — library dashboard and API
-After=network-online.target srv.mount
+# tailscaled is ordering only, not a dependency: it matters when
+# LIBRARIAND_HOST is the Tailscale address, which cannot be bound until
+# tailscaled is up. Without Tailscale installed this line is simply inert.
+After=network-online.target srv.mount tailscaled.service
 Wants=network-online.target
 
 # Nothing works without the library drive. Without this the service starts on a

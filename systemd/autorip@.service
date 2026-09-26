@@ -13,6 +13,10 @@
 
 [Unit]
 Description=Auto-rip audio CD on %i
+# Every path the ripper writes is on the library drive. Without this a disc
+# inserted on a boot where /srv failed to mount (`nofail`) fails obscurely on
+# a root-owned mountpoint instead of not starting at all.
+RequiresMountsFor=/srv
 
 [Service]
 Type=oneshot

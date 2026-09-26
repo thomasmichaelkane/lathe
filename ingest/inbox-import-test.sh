@@ -50,9 +50,16 @@ hasnt() { if grep -qF "$2" "$3"; then bad "$1 (unexpectedly found: $2)"; else ok
 # named in STUB_MATCH, which is what `import.move: yes` does for real. The
 # Bandcamp pass matches nothing. STUB_MB_ERROR makes pass 1 emit the kind of
 # line the script greps for when MusicBrainz is unreachable.
+#
+# STUB_STRIP imports an album the way beets really does when the folder holds
+# more than music: the audio goes, and the .cue/.log/fetch.json stays behind.
+# STUB_ARRIVE drops a new album into the inbox partway through pass 1, once —
+# a rip finishing in the middle of a long import. Every invocation's arguments
+# are appended to STUB_ARGS, so a case can see exactly what beets was offered.
 cat > "$TMP/beet" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+echo "$*" >>"$STUB_ARGS"
 is_mb_pass=0
 for a in "$@"; do [ "$a" = "bandcamp" ] && is_mb_pass=1; done
 
@@ -64,6 +71,13 @@ if [ "$is_mb_pass" = "1" ]; then
   for album in ${STUB_MATCH:-}; do
     rm -rf "$INBOX/${album//_/ }"
   done
+  for album in ${STUB_STRIP:-}; do
+    find "$INBOX/${album//_/ }" -name '*.flac' -delete
+  done
+  if [ -n "${STUB_ARRIVE:-}" ] && [ ! -e "$STUB_ARGS.arrived" ]; then
+    mkdir -p "$INBOX/${STUB_ARRIVE//_/ }"
+    touch "$STUB_ARGS.arrived"
+  fi
 fi
 exit 0
 STUB
@@ -137,6 +151,8 @@ run_import() {
   mkdir -p "$TMP/inbox" "$TMP/quarantine"
   : >"$CAPTURE"
   : >"$TMP/import.log"
+  rm -f "$TMP/args.txt" "$TMP/args.txt.arrived"
+  : >"$TMP/args.txt"
   eval "$1"   # case-specific inbox setup
   set +e
   env PATH="$TMP:$PATH" \
@@ -145,7 +161,11 @@ run_import() {
       BEETS_CONFIG="$TMP/unused.yaml" \
       LOG="$TMP/import.log" \
       SETTLE_SECONDS=1 \
+      SETTLE_POLL=1 \
+      STUB_ARGS="$TMP/args.txt" \
       STUB_MATCH="${STUB_MATCH:-}" \
+      STUB_STRIP="${STUB_STRIP:-}" \
+      STUB_ARRIVE="${STUB_ARRIVE:-}" \
       STUB_MB_ERROR="${STUB_MB_ERROR:-}" \
       NTFY_URL="${CASE_NTFY:-}" \
       NAVIDROME_URL="${CASE_ND_URL:-}" \
@@ -246,6 +266,56 @@ check "nothing is swept to quarantine" "$(count "$TMP/quarantine")" "0"
 has  "the abort is pushed"             "NTFY-TITLE: Import aborted - MusicBrainz unreachable" "$CAPTURE"
 has  "at high priority"                "NTFY-PRIORITY: high"        "$CAPTURE"
 hasnt "and Navidrome is not poked"     "SCAN-PATH"                  "$CAPTURE"
+
+echo
+echo "beets is offered the snapshot, item by item — not the inbox directory"
+
+STUB_MATCH="" STUB_MB_ERROR="" \
+CASE_NTFY="" CASE_ND_URL="" CASE_ND_USER="" CASE_ND_PASS="" \
+run_import 'mkdir -p "$TMP/inbox/One Album"'
+has   "the album is named explicitly"  "$TMP/inbox/One Album"  "$TMP/args.txt"
+if grep -qE " $TMP/inbox\$" "$TMP/args.txt"; then
+  bad "the inbox itself is never passed"
+else
+  ok "the inbox itself is never passed"
+fi
+
+echo
+echo "an import that leaves clutter behind is an import, not a quarantine"
+
+STUB_STRIP="With_Junk" STUB_MATCH="" STUB_MB_ERROR="" \
+CASE_NTFY="$BASE" CASE_ND_URL="" CASE_ND_USER="" CASE_ND_PASS="" \
+run_import '
+  mkdir -p "$TMP/inbox/With Junk" "$TMP/inbox/Archives Only"
+  touch "$TMP/inbox/With Junk/01 Song.flac" "$TMP/inbox/With Junk/album.cue" \
+        "$TMP/inbox/With Junk/fetch.json" "$TMP/inbox/With Junk/Front.jpg"
+  touch "$TMP/inbox/Archives Only/album.rar"
+'
+check "exits 0"                                   "$LAST_EXIT" "0"
+check "the leftovers are cleared, not kept"       "$(count "$TMP/inbox")" "0"
+has   "counted as imported"                       "Imported 1 of 2."      "$CAPTURE"
+if [ -e "$TMP/quarantine/With Junk" ]; then
+  bad "and not swept into quarantine"
+else
+  ok "and not swept into quarantine"
+fi
+has   "what was deleted is logged"                "fetch.json"            "$TMP/import.log"
+check "a folder that never had audio still quarantines" \
+      "$(ls "$TMP/quarantine")" "Archives Only"
+
+echo
+echo "something arriving mid-import is imported, not swept unseen"
+
+STUB_ARRIVE="Late_Arrival" STUB_MATCH="Early_Album" STUB_MB_ERROR="" \
+CASE_NTFY="" CASE_ND_URL="" CASE_ND_USER="" CASE_ND_PASS="" \
+run_import 'mkdir -p "$TMP/inbox/Early Album"'
+check "exits 0"                                   "$LAST_EXIT" "0"
+has   "the run goes round again"                  "more arrived during this run" "$TMP/import.log"
+has   "the late arrival is offered to beets"      "$TMP/inbox/Late Arrival" "$TMP/args.txt"
+# Unmatched by the stub, so after beets has seen it, it quarantines — the point
+# is the order: offered first, swept second.
+check "and only then quarantined"                 "$(ls "$TMP/quarantine")" "Late Arrival"
+check "the inbox ends empty"                      "$(count "$TMP/inbox")" "0"
 
 echo
 echo "an empty inbox is not an event"

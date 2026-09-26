@@ -5,6 +5,10 @@
 
 [Unit]
 Description=Import /srv/inbox into the music library
+# The inbox, the library, beets' database and its config all live on the
+# library drive. inbox.path already waits for the mount; this makes the
+# service say so itself, so a manual `systemctl start` cannot run without it.
+RequiresMountsFor=/srv
 
 [Service]
 Type=oneshot
