@@ -686,6 +686,24 @@ def run_checks(client, auth, srv: Path):
     truthy("a path-traversal name is refused", r.status_code >= 400 or
            r.json().get("ok") is False)
 
+    # The one that mattered: a bare "..", percent-encoded so no client
+    # normalises it away. It used to resolve to /srv itself, and DELETE would
+    # have removed the library.
+    for label, call in (
+        ("DELETE", lambda: client.delete("/quarantine/%2E%2E", headers=auth)),
+        ("retry", lambda: client.post("/quarantine/%2E%2E/retry?dry_run=true",
+                                      headers=auth)),
+        ("resolve", lambda: client.post(
+            "/quarantine/%2E%2E/resolve", headers=auth,
+            json={"identifier": "1a2b3c4d-1a2b-1a2b-1a2b-1a2b3c4d5e6f",
+                  "dry_run": True})),
+    ):
+        r = call()
+        truthy(f"{label} of '..' is refused", r.status_code >= 400 and
+               r.json().get("ok") is False)
+    truthy("and /srv is still all there", (srv / "quarantine").is_dir()
+           and (srv / "inbox").is_dir())
+
     section("quarantine — resolve")
     r = client.post("/quarantine/The Wall (Disc 1)/resolve", headers=auth,
                     json={"identifier": "not-an-id"})
