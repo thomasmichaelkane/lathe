@@ -48,7 +48,29 @@ from quarantine import AUDIO_SUFFIXES, INBOX, _free_name
 
 TORRENTS = Path(os.environ.get("TORRENTS", "/srv/staging/torrents"))
 ARIA2_RPC = os.environ.get("ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
-ARIA2_SECRET = os.environ.get("ARIA2_SECRET", "")
+# install.sh generates the secret into this file (0640 root:music), and the
+# aria2 container reads the same file. ARIA2_SECRET overrides it for
+# development, where there is no /etc/lathe.
+ARIA2_SECRET_FILE = Path(os.environ.get("ARIA2_SECRET_FILE",
+                                        "/etc/lathe/secrets/aria2_rpc_secret"))
+# gluetun's control server, for the VPN line. Needs no setting on the Pi: if
+# a WireGuard key has been installed, torrents are meant to run behind the VPN
+# and gluetun is expected on localhost. The key is 0600 root and never read
+# here — only whether it exists, which the 0750 root:music directory allows.
+# No key and no GLUETUN_URL (e.g. a dev laptop) means no VPN line at all.
+WIREGUARD_KEY = Path(os.environ.get("WIREGUARD_KEY",
+                                    "/etc/lathe/secrets/wireguard_private_key"))
+GLUETUN_URL = os.environ.get("GLUETUN_URL", "").rstrip("/") or (
+    "http://127.0.0.1:8000" if WIREGUARD_KEY.exists() else "")
+
+
+def _secret() -> str:
+    if os.environ.get("ARIA2_SECRET"):
+        return os.environ["ARIA2_SECRET"]
+    try:
+        return ARIA2_SECRET_FILE.read_text().strip()
+    except OSError:
+        return ""
 
 RECORD = ".librariand.json"
 ID_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{6}$")
@@ -73,7 +95,8 @@ class BadId(TorrentError):
 # --- aria2 ----------------------------------------------------------------
 
 def _call(method: str, *params):
-    token = [f"token:{ARIA2_SECRET}"] if ARIA2_SECRET else []
+    secret = _secret()
+    token = [f"token:{secret}"] if secret else []
     body = json.dumps({"jsonrpc": "2.0", "id": "librariand", "method": method,
                        "params": token + list(params)}).encode()
     req = urllib.request.Request(ARIA2_RPC, body,
@@ -92,6 +115,34 @@ def _call(method: str, *params):
     if "error" in data:
         raise TorrentError(f"aria2: {data['error'].get('message', data['error'])}")
     return data["result"]
+
+
+def vpn() -> dict | None:
+    """The VPN's state, from gluetun: {"up": bool, "ip": str|None, "detail": str}.
+
+    None when no VPN is configured (GLUETUN_URL unset). "Not reachable" is
+    reported as down, not unknown: aria2 lives inside gluetun's network, so if
+    gluetun is not answering, nothing is downloading through it either.
+    """
+    if not GLUETUN_URL:
+        return None
+
+    def get(path):
+        with urllib.request.urlopen(GLUETUN_URL + path, timeout=3) as resp:
+            return json.loads(resp.read())
+
+    try:
+        status = get("/v1/vpn/status").get("status")
+    except (urllib.error.URLError, OSError, ValueError):
+        return {"up": False, "ip": None,
+                "detail": f"gluetun is not answering at {GLUETUN_URL}"}
+    if status != "running":
+        return {"up": False, "ip": None, "detail": f"VPN is {status or 'down'}"}
+    try:
+        ip = get("/v1/publicip/ip").get("public_ip") or None
+    except (urllib.error.URLError, OSError, ValueError):
+        ip = None
+    return {"up": True, "ip": ip, "detail": "connected"}
 
 
 def reachable() -> bool:
@@ -275,22 +326,53 @@ def ready_count() -> int:
 
 # --- actions --------------------------------------------------------------
 
-def add(magnet: str) -> dict:
-    """Start downloading a magnet. Adding one already here returns that one."""
-    info_hash, name = parse_magnet(magnet)
+def parse_link(link: str) -> tuple[str, str | None]:
+    """(dedupe key, display name) for a magnet or a .torrent URL.
+
+    A .torrent URL is handed to aria2 as it is, never fetched here: that
+    request would leave from the Pi's own connection, outside the VPN, and
+    tell the site hosting the file your home IP. aria2 fetches it from inside
+    gluetun's network like everything else. The cost is that its info hash is
+    unknown until aria2 has it, so a URL is deduplicated on the URL itself.
+    """
+    link = (link or "").strip()
+    if link.startswith("magnet:"):
+        info_hash, name = parse_magnet(link)
+        return f"btih:{info_hash}", name
+    parsed = urllib.parse.urlsplit(link)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        base = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+        name = base[:-len(".torrent")] if base.lower().endswith(".torrent") else None
+        return f"url:{link}", name or None
+    raise TorrentError("paste a magnet link (magnet:?…) or a .torrent URL (https://…)")
+
+
+def _record_key(rec: dict) -> str | None:
+    # Records written before .torrent URLs were accepted carry only info_hash.
+    return rec.get("key") or (f"btih:{rec['info_hash']}" if rec.get("info_hash") else None)
+
+
+def _record_link(rec: dict) -> str:
+    return rec.get("link") or rec["magnet"]
+
+
+def add(link: str) -> dict:
+    """Start downloading a magnet or .torrent URL. Adding one already here
+    returns that one rather than starting a second copy."""
+    key, name = parse_link(link)
     TORRENTS.mkdir(parents=True, exist_ok=True)
     for d in TORRENTS.iterdir():
-        if d.is_dir() and _read_record(d).get("info_hash") == info_hash:
+        if d.is_dir() and _record_key(_read_record(d)) == key:
             return {"id": d.name, "detail": "already added"}
 
     tid = time.strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(3)
     d = TORRENTS / tid
     d.mkdir()
-    record = {"id": tid, "magnet": magnet.strip(), "info_hash": info_hash,
+    record = {"id": tid, "link": link.strip(), "key": key,
               "name": name, "added_at": time.time()}
     _write_record(d, record)
     try:
-        record["gid"] = _submit(d, record["magnet"])
+        record["gid"] = _submit(d, record["link"])
     except TorrentError:
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -298,11 +380,14 @@ def add(magnet: str) -> dict:
     return {"id": tid, "detail": "added"}
 
 
-def _submit(d: Path, magnet: str) -> str:
-    return _call("aria2.addUri", [magnet], {
+def _submit(d: Path, link: str) -> str:
+    return _call("aria2.addUri", [link], {
         "dir": str(d),
         "seed-time": "0",
         "bt-save-metadata": "false",
+        # For a .torrent URL: follow it from memory, so the .torrent file
+        # itself is never written into the payload and moved to the inbox.
+        "follow-torrent": "mem",
     })
 
 
@@ -321,7 +406,7 @@ def resume(tid: str) -> str:
         return "already downloading"
     for r in rows:
         _quietly("aria2.removeDownloadResult", r["gid"])
-    rec["gid"] = _submit(d, rec["magnet"])
+    rec["gid"] = _submit(d, _record_link(rec))
     _write_record(d, rec)
     return "resumed"
 

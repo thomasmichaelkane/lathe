@@ -41,6 +41,8 @@
 #   /etc/default/lathe    (created if absent, never overwritten — it holds the
 #                          ntfy topic and the Navidrome password, neither of
 #                          which is in the repo)
+#   /etc/lathe/secrets/   (aria2's RPC secret generated if absent; your
+#                          WireGuard key only ever permission-tightened)
 #
 # Code is replaced. Data is not. Albums sitting in quarantine have no bearing
 # on a deploy.
@@ -72,6 +74,7 @@ BEETS_DIR="${BEETS_DIR:-$SRV/config/beets}"
 # Overridable for install-test.sh only; the defaults are the real paths.
 LATHE_ENV="${LATHE_ENV:-/etc/default/lathe}"
 LATHE_RELEASE="${LATHE_RELEASE:-/etc/lathe-release}"
+LATHE_SECRETS="${LATHE_SECRETS:-/etc/lathe/secrets}"
 
 CHANGED=()
 CHANGED_UNITS=()
@@ -422,7 +425,10 @@ for d in \
   "$SRV/staging/rips" \
   "$SRV/staging/fetched" \
   "$SRV/staging/incoming" \
+  "$SRV/staging/torrents" \
   "$SRV/config/navidrome" \
+  "$SRV/config/aria2" \
+  "$SRV/config/gluetun" \
   "$SRV/config/beets" \
   "$SRV/config/librariand" \
   "$SRV/logs/rips"
@@ -740,6 +746,54 @@ else
   chown root:root "$tmp"
   mv -f "$tmp" "$LATHE_ENV"
   say "  created    $LATHE_ENV (all unset — edit to enable pushes, rescans and a token)"
+fi
+
+# Torrent secrets, for the opt-in gluetun + aria2 pair in compose.
+#
+# Raw files rather than lines in $LATHE_ENV, because compose bind-mounts them
+# into the containers — so `docker compose`, run as you, never has to read a
+# root-only file. Two, with different readers:
+#
+#   aria2_rpc_secret       generated here, once. 0640 root:music — the aria2
+#                          container and librariand both run as music.
+#   wireguard_private_key  yours, from Proton (docs/torrents.md). 0600 root —
+#                          only gluetun, as root, reads it. Never generated,
+#                          never printed; this only says whether it is there.
+#
+# Neither is ever overwritten, so rotating one is: delete it, re-run.
+say "torrent secrets ($LATHE_SECRETS):"
+aria2_secret="$LATHE_SECRETS/aria2_rpc_secret"
+wg_key="$LATHE_SECRETS/wireguard_private_key"
+if [ "$DRY_RUN" -eq 1 ]; then
+  [ -d "$LATHE_SECRETS" ] || say "  WOULD CREATE  $LATHE_SECRETS (0750 root:$MUSIC_USER)"
+  [ -s "$aria2_secret" ] 2>/dev/null \
+    || say "  WOULD CREATE  $aria2_secret (random, 0640 root:$MUSIC_USER)"
+else
+  mkdir -p "$LATHE_SECRETS"
+  chown "root:$MUSIC_USER" "$LATHE_SECRETS"
+  chmod 0750 "$LATHE_SECRETS"
+  if [ -s "$aria2_secret" ]; then
+    say "  unchanged  aria2 RPC secret"
+  else
+    tmp="$(mktemp "$LATHE_SECRETS/.lathe-install.XXXXXX")"
+    TMPFILES+=("$tmp")
+    head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$tmp"
+    chmod 0640 "$tmp"
+    chown "root:$MUSIC_USER" "$tmp"
+    mv -f "$tmp" "$aria2_secret"
+    say "  created    aria2 RPC secret"
+  fi
+  # Tighten a hand-made key file rather than trusting how it was created.
+  if [ -s "$wg_key" ]; then
+    chown root:root "$wg_key"
+    chmod 0600 "$wg_key"
+  fi
+fi
+if [ -s "$wg_key" ] 2>/dev/null; then
+  say "  present    WireGuard key — start torrents with:"
+  say "               docker compose -f compose/docker-compose.yml --profile torrents up -d"
+else
+  say "  absent     WireGuard key — torrents stay off until you add it (docs/torrents.md)"
 fi
 
 # What is deployed, written where it can be read without the checkout:

@@ -10,13 +10,22 @@
 </div>
 {% endif %}
 
+{% if vpn and not vpn.up %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>VPN down</strong> — {{ vpn.detail }}. Downloads are paused, not
+  leaking: aria2 has no route out except through the VPN.
+</div>
+{% elif vpn %}
+<div class="vpn-line">VPN connected{% if vpn.ip %} · exit <span class="mono">{{ vpn.ip }}</span>{% endif %}</div>
+{% endif %}
+
 {# Outside #torrents on purpose: the list below is swapped out every few
-   seconds while anything downloads, and a half-typed magnet must survive it. #}
+   seconds while anything downloads, and a half-typed link must survive it. #}
 <div class="fetch-add">
   <button class="primary add-open" data-action="add-open" aria-expanded="false"
           {{ 'disabled' if not aria2_online }}>+</button>
   <div class="field" id="add-form" hidden>
-    <input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:…"
+    <input type="text" id="link" placeholder="Magnet or .torrent link"
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="primary" data-action="add">Fetch</button>
   </div>
@@ -82,7 +91,7 @@
 {% if not torrents and not entries %}
 <div class="empty">
   <strong>Nothing fetching.</strong>
-  Press + and paste a magnet link.
+  Press + and paste a magnet or .torrent link.
 </div>
 {% endif %}
 

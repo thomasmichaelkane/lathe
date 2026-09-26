@@ -67,6 +67,95 @@ services:
       - /srv/music:/music:ro
       - /srv/config/navidrome:/data
 
+  # --------------------------------------------------------------- torrents
+  #
+  # Opt-in. Neither service starts with a plain `docker compose up -d`; they
+  # need the profile, and they need your Proton WireGuard key first:
+  #
+  #   docker compose --profile torrents up -d
+  #
+  # docs/torrents.md has the setup. The shape is plan §13's: the VPN is scoped
+  # to this one container pair and never touches the host's routing, so
+  # Tailscale keeps the default route and a dropped VPN cannot cut you off
+  # from your own library. aria2 has no network of its own — it lives inside
+  # gluetun's — so if the tunnel drops, gluetun's firewall stops its traffic
+  # rather than letting it fall back to your home connection.
+
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun
+    profiles: ["torrents"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: wireguard
+      # LOAD-BEARING. Proton only permits BitTorrent on its P2P servers and
+      # blocks it everywhere else, so an unpinned connection looks perfectly
+      # healthy while every download sits at 0%. In gluetun's Proton filters,
+      # "port forwarding" servers ARE the P2P ones.
+      PORT_FORWARD_ONLY: "on"
+      # Nearby keeps it fast. Any country with Proton P2P servers works.
+      SERVER_COUNTRIES: Netherlands
+      TZ: Europe/London
+    secrets:
+      - wireguard_private_key
+    ports:
+      # aria2's RPC (librariand -> aria2) and gluetun's status routes
+      # (librariand's VPN line). Localhost only: nothing here is for the
+      # tailnet, let alone the internet.
+      - "127.0.0.1:6800:6800"
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Server lists and state, on the library drive rather than the SD card.
+      - /srv/config/gluetun:/gluetun
+      - ./gluetun/auth.toml:/gluetun/auth/config.toml:ro
+
+  aria2:
+    build: ./aria2
+    image: lathe-aria2
+    container_name: aria2
+    profiles: ["torrents"]
+    restart: unless-stopped
+    # Every packet goes through gluetun, or nowhere.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    # As `music`, like Navidrome, so what it downloads is owned by the user
+    # librariand runs as — which is what lets the dashboard move and delete it.
+    user: "1948:1948"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    secrets:
+      - aria2_rpc_secret
+    volumes:
+      # The SAME path inside as out. librariand tells aria2 where to write by
+      # absolute path, so a different mountpoint here would mean downloads
+      # that land somewhere librariand never looks.
+      - /srv/staging/torrents:/srv/staging/torrents
+      - /srv/config/aria2:/state
+
+# Created by install.sh, never committed. The WireGuard key is the one you add
+# by hand; the aria2 secret is generated. Compose bind-mounts them into the
+# containers, so `docker compose` never needs to read root-only files itself.
+secrets:
+  wireguard_private_key:
+    file: /etc/lathe/secrets/wireguard_private_key
+  aria2_rpc_secret:
+    file: /etc/lathe/secrets/aria2_rpc_secret
+
 # librariand is deliberately NOT here.
 #
 # It runs as a systemd service on the host instead — systemd/librariand.service,
@@ -75,5 +164,5 @@ services:
 # the host via uv. A container would have needed its own beets, which is two
 # installs to keep in step and one of them writing to the library.
 #
-# So this file is Navidrome and nothing else, which is also why it needs no
-# Dockerfile anywhere in the repo.
+# So this file is Navidrome, plus the opt-in torrent pair above. The one
+# Dockerfile in the repo is aria2's, and it is three lines.

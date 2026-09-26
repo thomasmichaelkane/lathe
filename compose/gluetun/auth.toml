@@ -1,0 +1,10 @@
+# gluetun control server roles.
+#
+# Since gluetun 3.40 every control-server route needs authentication. This
+# opens exactly the two read-only routes librariand polls for the Fetch tab's
+# VPN line, and nothing else — the routes that change settings or stop the
+# VPN stay locked. The port is published on 127.0.0.1 only.
+[[roles]]
+name = "librariand"
+routes = ["GET /v1/vpn/status", "GET /v1/publicip/ip"]
+auth = "none"

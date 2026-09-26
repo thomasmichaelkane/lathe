@@ -91,15 +91,15 @@ document.addEventListener("click", (ev) => {
       const form = document.getElementById("add-form");
       form.hidden = !form.hidden;
       btn.setAttribute("aria-expanded", String(!form.hidden));
-      if (!form.hidden) document.getElementById("magnet").focus();
+      if (!form.hidden) document.getElementById("link").focus();
       return;
     }
 
     case "add": {
-      const input = document.getElementById("magnet");
-      const magnet = (input.value || "").trim();
-      if (!magnet) { input.focus(); return flash("paste a magnet link", true); }
-      return act(btn, "POST", "/torrents", { magnet });
+      const input = document.getElementById("link");
+      const link = (input.value || "").trim();
+      if (!link) { input.focus(); return flash("paste a magnet link or a .torrent URL", true); }
+      return act(btn, "POST", "/torrents", { link });
     }
 
     case "move":
@@ -143,10 +143,10 @@ async function pollTorrents() {
 setTimeout(pollTorrents, 3000);
 
 /* Enter in an ID field is the same as pressing Retry next to it; in the
- * magnet field, the same as pressing Fetch. */
+ * link field, the same as pressing Fetch. */
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
-  if (ev.target.id === "magnet") {
+  if (ev.target.id === "link") {
     ev.preventDefault();
     return document.querySelector('[data-action="add"]')?.click();
   }

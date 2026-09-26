@@ -244,22 +244,22 @@ async def api_inbox():
     return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
-class MagnetBody(BaseModel):
-    magnet: str
+class LinkBody(BaseModel):
+    link: str
 
 
 @app.get("/torrents", dependencies=[Depends(require_api)])
 def api_torrents():
     downloads, online = torrents.entries()
-    return {"aria2": online,
+    return {"aria2": online, "vpn": torrents.vpn(),
             "torrents": [asdict(t) | {"finished": t.finished, "active": t.active}
                          for t in downloads]}
 
 
 @app.post("/torrents", dependencies=[Depends(require_api)])
-def api_torrent_add(body: MagnetBody):
+def api_torrent_add(body: LinkBody):
     try:
-        return {"ok": True, **torrents.add(body.magnet)}
+        return {"ok": True, **torrents.add(body.link)}
     except torrents.TorrentError as exc:
         return _fail(exc)
 
@@ -344,7 +344,7 @@ def _page(request: Request, name: str, **ctx) -> HTMLResponse:
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
-async def ui_index(request: Request):
+def ui_index(request: Request):
     # The inbox has no page of its own: it should be empty, so all anyone needs
     # is whether it is, how long the oldest item has waited, and a way to kick
     # the importer. That is one tile on the overview.
@@ -352,7 +352,8 @@ async def ui_index(request: Request):
     oldest = round(items[0].age_seconds / 60) if items else None
     return _page(request, "index.html",
                  health=system.health(), stats=system.stats(),
-                 inbox_oldest_min=oldest, nav="overview")
+                 inbox_oldest_min=oldest, vpn=torrents.vpn(),
+                 nav="overview")
 
 
 # One card per entry, colour-coded by what is actually wrong with it. The
@@ -440,7 +441,7 @@ def ui_fetch(request: Request):
     downloads, online = torrents.entries()
     return _page(request, "fetch.html", torrents=downloads, aria2_online=online,
                  aria2_rpc=torrents.ARIA2_RPC, entries=fetched.entries(),
-                 now=time.time(), nav="fetch")
+                 vpn=torrents.vpn(), now=time.time(), nav="fetch")
 
 
 @app.get("/ui/fetched", include_in_schema=False)

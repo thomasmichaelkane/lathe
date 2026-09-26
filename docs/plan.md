@@ -1722,7 +1722,7 @@ which Phase 1 already provides.
 
 - **Classical music tagging.** Composer-vs-performer is genuinely hard and beets' defaults handle it poorly. Only worth solving if a meaningful part of the collection is classical.
 - **Family access.** Currently single-user. Adding people means either Tailscale invites (easy, requires them to install it) or a public reverse proxy (harder, real threat model change).
-- **A VPN on this box, if you ever run one.** Only relevant if you add a torrent client here. Keep any VPN scoped to that client's own container — a full-tunnel VPN on the Pi fights Tailscale for the default route, so a tripped killswitch would cost you access to your own library. `farfetchd`'s repo covers the how; the only thing `lathe` cares about is that Tailscale keeps the default route.
+- ~~**A VPN on this box, if you ever run one.**~~ **Settled 2026-09-26** — see `docs/torrents.md`. librariand's Fetch tab drives aria2, which runs inside a gluetun container on Proton VPN (P2P servers only), opt-in under compose's `torrents` profile. The VPN is scoped to that container pair exactly as this item required: a full-tunnel VPN on the Pi would fight Tailscale for the default route, so a tripped killswitch would cost you access to your own library. No seeding.
 - **UPS.** Whether an unclean shutdown risk to the SQLite DBs justifies $30–60.
 - **How to accept a correct match that scored just short.** The measured case in
   §6.3 — a structurally perfect 30-track match at 0.0646 against a 0.04
