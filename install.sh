@@ -347,6 +347,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   say "  $SRV — the library, the tree, beets' library.db and state.pickle"
   say "  $LATHE_ENV — your ntfy topic, Navidrome login and librariand token"
   say "  the '$MUSIC_USER' user and group"
+  say "  the apt packages it installed (ffmpeg, python3-venv) — shared, not lathe's to remove"
 
   # /etc/abcde.conf is the one deployed path this script did not invent: the
   # abcde package ships its own. Removing it leaves the package with no config
@@ -455,6 +456,56 @@ if [ "$DRY_RUN" -eq 0 ]; then
   say "  setgid     $SRV/inbox, $SRV/staging/incoming"
 fi
 
+# The system packages the deploy depends on. These used to be a line in the
+# runbook, which left a hard dependency of every import to a manual step:
+# without ffmpeg the replaygain plugin fails to load, and beets drops it and
+# carries on. Installed here only if missing, so a routine redeploy neither
+# touches apt nor needs the network.
+#
+#   ffmpeg       ReplayGain on every import (config.yaml: backend: ffmpeg)
+#   python3-venv the beets and librariand venvs below
+#
+# git is not here, and cannot be: you need it to clone the repo this script is
+# in. `apt-get install` only — never upgrade — so nothing else on the system
+# moves. Uninstall leaves these alone; they are shared packages and removing
+# ffmpeg could break something that is not lathe's.
+#
+# APT_PACKAGES is overridable for install-test.sh only.
+read -r -a APT_PACKAGES <<<"${APT_PACKAGES:-ffmpeg python3-venv}"
+say "system packages:"
+if ! command -v dpkg-query >/dev/null 2>&1; then
+  warn "dpkg-query not found — not a Debian system? Install by hand: ${APT_PACKAGES[*]}"
+else
+  missing_pkgs=()
+  for pkg in "${APT_PACKAGES[@]}"; do
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      say "  present    $pkg"
+    else
+      missing_pkgs+=("$pkg")
+    fi
+  done
+  if [ "${#missing_pkgs[@]}" -gt 0 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      for pkg in "${missing_pkgs[@]}"; do say "  WOULD INSTALL  $pkg"; done
+    else
+      say "  installing ${missing_pkgs[*]} — this needs the network"
+      # Lock::Timeout: unattended-upgrades holds the dpkg lock for minutes at a
+      # time on a fresh Pi, and without it apt fails immediately instead of
+      # waiting its turn.
+      if apt-get -qq -o DPkg::Lock::Timeout=300 update >/dev/null 2>&1 \
+         && DEBIAN_FRONTEND=noninteractive apt-get -qq -o DPkg::Lock::Timeout=300 \
+              install -y --no-install-recommends "${missing_pkgs[@]}" >/dev/null 2>&1; then
+        for pkg in "${missing_pkgs[@]}"; do say "  installed  $pkg"; done
+      else
+        # Not fatal, same as the venvs: the steps that need these report
+        # their own failure below, and the next run retries.
+        warn "could not install ${missing_pkgs[*]} with apt. The venvs and the"
+        warn "beets check below will fail until this succeeds; the next run retries."
+      fi
+    fi
+  fi
+fi
+
 say "scripts:"
 install_file "$REPO/ingest/autorip.sh"      /usr/local/bin/autorip.sh      0755 root:root || true
 install_file "$REPO/ingest/inbox-import.sh" /usr/local/bin/inbox-import.sh 0755 root:root || true
@@ -508,7 +559,8 @@ else
     say "  ready      $BEETS_VENV"
   else
     warn "could not install beets into $BEETS_VENV. Nothing will import until"
-    warn "this succeeds; the next run retries it. Needs python3-venv and a network."
+    warn "this succeeds; the next run retries it. Usually the network — check the"
+    warn "system packages step above too, since this needs python3-venv."
   fi
 fi
 
@@ -603,8 +655,8 @@ else
   else
     warn "could not install librariand's dependencies into $VENV."
     warn "Everything else deployed fine; librariand will not start until this"
-    warn "succeeds, and the next run retries it. Needs python3-venv and a network:"
-    warn "  sudo apt install -y python3-venv && sudo ./install.sh"
+    warn "succeeds, and the next run retries it. Usually the network — check the"
+    warn "system packages step above too, since this needs python3-venv."
   fi
 fi
 

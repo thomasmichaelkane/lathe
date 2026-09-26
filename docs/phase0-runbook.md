@@ -213,7 +213,7 @@ there is no good reason to leave it on for a server.
 ## 9. Clone and deploy
 
 ```sh
-sudo apt install -y git python3-venv ffmpeg
+sudo apt install -y git                # the one package install.sh cannot install for you
 git clone https://github.com/thomasmichaelkane/lathe.git ~/lathe
 cd ~/lathe
 git checkout 0.1.0                     # a release, not main — see "Upgrading" below
@@ -225,16 +225,20 @@ cat /etc/lathe-release                 # VERSION=0.1.0
 sudo -u music beets-check.sh           # beets 2.13.1: all 11 plugins loaded
 ```
 
-**Do not install beets yourself** — not from apt, not with `uv tool install`.
-`install.sh` installs it, pinned, into `/usr/local/lib/beets` with `beet` on
-the default PATH, so the importer (which runs as `music`) and librariand both
-find the same one. A per-user install lands in your home directory, which the
-`music` user can neither see on its PATH nor, on Debian, enter at all.
+**`install.sh` installs everything else, so don't do it by hand:**
 
-- `python3-venv` is for the two venvs `install.sh` builds, beets and
-  librariand — the only steps that need the network.
-- `ffmpeg` is for beets' ReplayGain, which runs on **every** import, not just
-  rips. Without it the replaygain plugin silently fails to load.
+- **`ffmpeg` and `python3-venv`**, from apt, only if they are missing. ffmpeg
+  runs ReplayGain on **every** import, not just rips; python3-venv builds the
+  two venvs below. `git` is the exception because you need it to get
+  `install.sh` in the first place.
+- **beets**, pinned, into `/usr/local/lib/beets` with `beet` on the default
+  PATH — not from apt, not with `uv tool install`. The importer runs as
+  `music`, and a per-user install lands in your home directory, which `music`
+  can neither see on its PATH nor, on Debian, enter at all.
+- **librariand's dependencies**, pinned, into its own venv.
+
+The first deploy is the only one that needs the network; later ones touch apt
+and pip only if something changed.
 
 `install.sh` finishes by running `beets-check.sh` as `music`, and exits non-zero
 if any plugin the config asks for did not load. That check exists because beets
