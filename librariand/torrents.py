@@ -48,7 +48,29 @@ from quarantine import AUDIO_SUFFIXES, INBOX, _free_name
 
 TORRENTS = Path(os.environ.get("TORRENTS", "/srv/staging/torrents"))
 ARIA2_RPC = os.environ.get("ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
-ARIA2_SECRET = os.environ.get("ARIA2_SECRET", "")
+# install.sh generates the secret into this file (0640 root:music), and the
+# aria2 container reads the same file. ARIA2_SECRET overrides it for
+# development, where there is no /etc/lathe.
+ARIA2_SECRET_FILE = Path(os.environ.get("ARIA2_SECRET_FILE",
+                                        "/etc/lathe/secrets/aria2_rpc_secret"))
+# gluetun's control server, for the VPN line. Needs no setting on the Pi: if
+# a WireGuard key has been installed, torrents are meant to run behind the VPN
+# and gluetun is expected on localhost. The key is 0600 root and never read
+# here — only whether it exists, which the 0750 root:music directory allows.
+# No key and no GLUETUN_URL (e.g. a dev laptop) means no VPN line at all.
+WIREGUARD_KEY = Path(os.environ.get("WIREGUARD_KEY",
+                                    "/etc/lathe/secrets/wireguard_private_key"))
+GLUETUN_URL = os.environ.get("GLUETUN_URL", "").rstrip("/") or (
+    "http://127.0.0.1:8000" if WIREGUARD_KEY.exists() else "")
+
+
+def _secret() -> str:
+    if os.environ.get("ARIA2_SECRET"):
+        return os.environ["ARIA2_SECRET"]
+    try:
+        return ARIA2_SECRET_FILE.read_text().strip()
+    except OSError:
+        return ""
 
 RECORD = ".librariand.json"
 ID_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{6}$")
@@ -73,7 +95,8 @@ class BadId(TorrentError):
 # --- aria2 ----------------------------------------------------------------
 
 def _call(method: str, *params):
-    token = [f"token:{ARIA2_SECRET}"] if ARIA2_SECRET else []
+    secret = _secret()
+    token = [f"token:{secret}"] if secret else []
     body = json.dumps({"jsonrpc": "2.0", "id": "librariand", "method": method,
                        "params": token + list(params)}).encode()
     req = urllib.request.Request(ARIA2_RPC, body,
@@ -92,6 +115,34 @@ def _call(method: str, *params):
     if "error" in data:
         raise TorrentError(f"aria2: {data['error'].get('message', data['error'])}")
     return data["result"]
+
+
+def vpn() -> dict | None:
+    """The VPN's state, from gluetun: {"up": bool, "ip": str|None, "detail": str}.
+
+    None when no VPN is configured (GLUETUN_URL unset). "Not reachable" is
+    reported as down, not unknown: aria2 lives inside gluetun's network, so if
+    gluetun is not answering, nothing is downloading through it either.
+    """
+    if not GLUETUN_URL:
+        return None
+
+    def get(path):
+        with urllib.request.urlopen(GLUETUN_URL + path, timeout=3) as resp:
+            return json.loads(resp.read())
+
+    try:
+        status = get("/v1/vpn/status").get("status")
+    except (urllib.error.URLError, OSError, ValueError):
+        return {"up": False, "ip": None,
+                "detail": f"gluetun is not answering at {GLUETUN_URL}"}
+    if status != "running":
+        return {"up": False, "ip": None, "detail": f"VPN is {status or 'down'}"}
+    try:
+        ip = get("/v1/publicip/ip").get("public_ip") or None
+    except (urllib.error.URLError, OSError, ValueError):
+        ip = None
+    return {"up": True, "ip": ip, "detail": "connected"}
 
 
 def reachable() -> bool:

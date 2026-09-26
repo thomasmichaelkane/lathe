@@ -185,6 +185,12 @@ ul.notes li { margin: 2px 0; }
 .tile.warn  .n { color: var(--warn); }
 .tile.acid  .n { color: var(--acid); }
 
+.vpn-line {
+  font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ok); margin-bottom: 10px;
+}
+.vpn-line .mono { text-transform: none; letter-spacing: 0; color: var(--ink-dim); }
+
 /* Fetch: the + sits above the cards; the magnet field opens beside it. */
 .fetch-add { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; }
 .fetch-add .add-open { font-size: 22px; line-height: 1; padding: 0; width: 44px; min-height: 42px; }

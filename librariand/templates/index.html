@@ -24,6 +24,12 @@
 </div>
 {% endif %}
 
+{% if vpn and not vpn.up %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>VPN down.</strong> {{ vpn.detail }} — torrents are paused.
+</div>
+{% endif %}
+
 <h2 class="section">Pipeline</h2>
 <div class="tiles">
   <a class="tile {{ 'warn' if counts.quarantine }}" href="/ui/quarantine">

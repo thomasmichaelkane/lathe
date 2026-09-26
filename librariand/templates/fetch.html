@@ -10,6 +10,15 @@
 </div>
 {% endif %}
 
+{% if vpn and not vpn.up %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>VPN down</strong> — {{ vpn.detail }}. Downloads are paused, not
+  leaking: aria2 has no route out except through the VPN.
+</div>
+{% elif vpn %}
+<div class="vpn-line">VPN connected{% if vpn.ip %} · exit <span class="mono">{{ vpn.ip }}</span>{% endif %}</div>
+{% endif %}
+
 {# Outside #torrents on purpose: the list below is swapped out every few
    seconds while anything downloads, and a half-typed magnet must survive it. #}
 <div class="fetch-add">

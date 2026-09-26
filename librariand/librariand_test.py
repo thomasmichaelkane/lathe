@@ -297,6 +297,33 @@ class FakeAria2:
                 r["status"], r["errorMessage"] = "error", "No peers found"
 
 
+class FakeGluetun:
+    """gluetun's two public control-server routes, with a switchable state."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        self.status = "running"
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = ({"status": fake.status} if self.path == "/v1/vpn/status"
+                        else {"public_ip": "185.107.56.1"})
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+
 MAGNET = ("magnet:?xt=urn:btih:40b43013f9d149afa64f59239bf9688eb938b193"
           "&dn=Test+Album&tr=http%3A%2F%2Ftracker.example%2Fannounce")
 MAGNET2 = MAGNET.replace("40b43013", "50b43013").replace("Test+Album", "Second")
@@ -324,6 +351,7 @@ def main() -> int:
 
     build_srv(srv)
     aria2 = FakeAria2()
+    gluetun = FakeGluetun()
 
     os.environ.update({
         "SRV": str(srv),
@@ -335,6 +363,7 @@ def main() -> int:
         "TORRENTS": str(srv / "staging" / "torrents"),
         "ARIA2_RPC": aria2.url,
         "ARIA2_SECRET": FakeAria2.SECRET,
+        "GLUETUN_URL": gluetun.url,
         "RIPS": str(srv / "staging" / "rips"),
         "MUSIC": str(srv / "music"),
         "LATHE_RELEASE": str(tmp / "lathe-release"),
@@ -357,6 +386,7 @@ def main() -> int:
     try:
         run_checks(client, auth, srv)
         run_torrent_checks(client, auth, srv, aria2)
+        run_vpn_checks(client, auth, srv, gluetun)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -466,6 +496,53 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
         truthy("the page shows a banner", "aria2 is not reachable" in page)
     finally:
         torrents_mod.ARIA2_RPC = good
+
+
+def run_vpn_checks(client, auth, srv: Path, gluetun: FakeGluetun):
+    import torrents as torrents_mod
+
+    section("fetch — secret from file")
+    secret_file = srv.parent / "aria2_rpc_secret"
+    secret_file.write_text(FakeAria2.SECRET + "\n")
+    env_secret = os.environ.pop("ARIA2_SECRET")
+    torrents_mod.ARIA2_SECRET_FILE = secret_file
+    try:
+        truthy("the secret is read from its file", client.get(
+            "/torrents", headers=auth).json()["aria2"])
+        secret_file.write_text("wrong")
+        truthy("and a wrong one is refused by aria2", not client.get(
+            "/torrents", headers=auth).json()["aria2"])
+    finally:
+        os.environ["ARIA2_SECRET"] = env_secret
+
+    section("fetch — VPN")
+    v = client.get("/torrents", headers=auth).json()["vpn"]
+    truthy("a running VPN is up", v["up"])
+    check("with its exit IP", v["ip"], "185.107.56.1")
+    page = client.get("/ui/fetch", headers=auth).text
+    truthy("the Fetch page says it is connected", "VPN connected" in page)
+    truthy("and the overview stays quiet",
+           "VPN down" not in client.get("/", headers=auth).text)
+
+    gluetun.status = "stopped"
+    v = client.get("/torrents", headers=auth).json()["vpn"]
+    check("a stopped VPN is down", v["up"], False)
+    truthy("the Fetch page says so", "VPN down" in client.get("/ui/fetch", headers=auth).text)
+    truthy("and so does the overview", "VPN down" in client.get("/", headers=auth).text)
+
+    good = torrents_mod.GLUETUN_URL
+    torrents_mod.GLUETUN_URL = "http://127.0.0.1:9"
+    try:
+        v = client.get("/torrents", headers=auth).json()["vpn"]
+        check("gluetun not answering counts as down", v["up"], False)
+        torrents_mod.GLUETUN_URL = ""
+        check("with no VPN configured, nothing is claimed",
+              client.get("/torrents", headers=auth).json()["vpn"], None)
+        truthy("and no VPN line is shown",
+               "VPN" not in client.get("/ui/fetch", headers=auth).text)
+    finally:
+        torrents_mod.GLUETUN_URL = good
+        gluetun.status = "running"
 
 
 def run_checks(client, auth, srv: Path):

@@ -79,8 +79,8 @@ echo
 echo "it is idempotent"
 
 mkdir -p "$SRV"/{music,inbox,quarantine} \
-         "$SRV"/staging/{rips,fetched,incoming} \
-         "$SRV"/config/{navidrome,beets,librariand} \
+         "$SRV"/staging/{rips,fetched,incoming,torrents} \
+         "$SRV"/config/{navidrome,beets,librariand,aria2,gluetun} \
          "$SRV"/logs/rips
 run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
 has   "an existing tree is left alone" "all §4 directories already present" "$OUT"
@@ -166,10 +166,10 @@ cp "$OUT" "$TMP/uninstall-plan.txt"
 is_left_alone() {
   case "$1" in
     "$SRV/music"|"$SRV/inbox"|"$SRV/quarantine") return 0 ;;
-    "$SRV/staging/rips"|"$SRV/staging/fetched"|"$SRV/staging/incoming") return 0 ;;
-    "$SRV/config/navidrome"|"$SRV/config/beets"|"$SRV/config/librariand") return 0 ;;
+    "$SRV/staging/rips"|"$SRV/staging/fetched"|"$SRV/staging/incoming"|"$SRV/staging/torrents") return 0 ;;
+    "$SRV/config/navidrome"|"$SRV/config/beets"|"$SRV/config/librariand"|"$SRV/config/aria2"|"$SRV/config/gluetun") return 0 ;;
     "$SRV/logs/rips") return 0 ;;
-    /etc/default/lathe) return 0 ;;
+    /etc/default/lathe|/etc/lathe/secrets|/etc/lathe/secrets/*) return 0 ;;
   esac
   return 1
 }
