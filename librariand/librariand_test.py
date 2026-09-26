@@ -192,6 +192,7 @@ def main() -> int:
         "RIP_LOGS": str(srv / "logs" / "rips"),
         "RIPS": str(srv / "staging" / "rips"),
         "MUSIC": str(srv / "music"),
+        "LATHE_RELEASE": str(tmp / "lathe-release"),
         "BEETS_CONFIG": str(srv / "config" / "beets" / "config.yaml"),
         "BEET_CMD": str(bin_dir / "beet"),
         "LIBRARIAND_TOKEN": TOKEN,
@@ -246,6 +247,28 @@ def run_checks(client, auth, srv: Path):
     # is no longer counted here — that is Quarantine's business now.
     check("counts rips needing attention", h["rips_needing_attention"], 2)
     truthy("names the last successful rip", h["last_successful_rip"] is not None)
+
+    section("release")
+    rel_file = Path(os.environ["LATHE_RELEASE"])
+    r = client.get("/health", headers=auth).json()["release"]
+    check("with no stamp, no version is claimed", r["version"], None)
+    over = client.get("/", headers=auth).text
+    truthy("and the overview says it was not deployed by install.sh",
+           "not deployed by install.sh" in over)
+
+    # Exactly what install.sh writes.
+    rel_file.write_text("VERSION=0.1.0\nCOMMIT=abc1234\n", encoding="utf-8")
+    r = client.get("/health", headers=auth).json()["release"]
+    check("the stamp's version is reported", r["version"], "0.1.0")
+    check("with its commit", r["commit"], "abc1234")
+    truthy("and when it was deployed", r["deployed_at"] is not None)
+    truthy("the overview shows it", "lathe 0.1.0" in client.get("/", headers=auth).text)
+
+    # Past a tag, the version already contains the commit; don't print it twice.
+    rel_file.write_text("VERSION=0.1.0-3-gdef5678\nCOMMIT=def5678\n", encoding="utf-8")
+    over = client.get("/", headers=auth).text
+    truthy("an untagged deploy says so", "lathe 0.1.0-3-gdef5678" in over)
+    truthy("without repeating the commit", "· def5678" not in over)
 
     section("stats")
     s = client.get("/stats", headers=auth).json()

@@ -1297,7 +1297,11 @@ because almost nothing runs from where it is checked out:
 | `ingest/beets/plugins/*.py` | `/srv/config/beets/plugins/` (the absolute `pluginpath` in §6.3) |
 | `systemd/*.service`, `systemd/*.path`, `systemd/*.timer` | `/etc/systemd/system/` |
 | `librariand/*.py`, `librariand/templates/`, `librariand/static/` | `/usr/local/lib/librariand/` |
+| `librariand/requirements.txt` | installed into `/usr/local/lib/librariand/venv` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
+| `systemd/journald.conf.d/lathe.conf` | `/etc/systemd/journald.conf.d/` |
+| `lathe.env.example` | `/etc/default/lathe` — **once**, if absent; never overwritten |
+| *(generated from the git tag)* | `/etc/lathe-release` |
 | `compose/docker-compose.yml` | **nothing — it runs from the checkout** (see below) |
 
 Copying these by hand is fine exactly once. After that it is a trap, and a
@@ -1323,8 +1327,37 @@ Navidrome credentials all outlive it. The one path it cannot cleanly restore is
 `/etc/abcde.conf`, which belongs to the `abcde` package; it says so, and tells
 you to `apt install --reinstall abcde`.
 
-An update is `git pull` followed by `sudo ./install.sh`. It replaces code and
-never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
+**Releases are git tags in `0.1.0` form**, cut by hand from `main`
+(`git tag 0.1.0 && git push origin 0.1.0`). `.github/workflows/release.yml`
+runs every suite on the tag and publishes a GitHub release only if they pass,
+and refuses a tag whose commit is not on `main`. Pull requests run the same
+tests.
+
+The version is **derived from the tag at deploy time**, not kept in a file, so
+there is nothing to bump. `install.sh` writes what it deployed to
+`/etc/lathe-release` (`VERSION=0.1.0`, `COMMIT=abc1234`), last, once everything
+else has succeeded — and librariand shows it. That is deliberately not the same
+as `git describe` in the checkout, which says what is *checked out*, not what
+was deployed. Between tags the version reads `0.1.0-3-gabc1234`, and a checkout
+with local changes appends `-dirty`; neither can pass for a release.
+
+An upgrade is `git fetch --tags && git checkout 0.2.0 && sudo ./install.sh`;
+rolling back is the same with an older tag. The runbook has the full sequence.
+Three things `install.sh` handles so an upgrade cannot half-work:
+
+- **librariand's venv follows `librariand/requirements.txt`**, pinned exactly.
+  It used to be built once and never updated, so a release adding a dependency
+  would have shipped code importing something the venv lacked. It is now
+  reinstalled whenever the file differs from the copy recorded at the last
+  *successful* install, so a failed install is retried rather than forgotten.
+- **`/etc/default/lathe` is seeded from `lathe.env.example`** and still never
+  overwritten — but every deploy names any setting the template has that the
+  live file lacks, so a release's new setting cannot silently go unconfigured.
+- **A checkout with local changes is refused** (`--allow-dirty` overrides).
+  Several deploy steps glob directories, so an untracked file made on the Pi
+  would otherwise ship as part of the release under a clean-looking version.
+
+A deploy replaces code and never data: `/srv/music`, `/srv/inbox`, `/srv/quarantine`, `/srv/staging`,
 beets' `library.db` and `state.pickle`, and Navidrome's database are all
 untouched, so a backlog sitting in quarantine has no bearing on a deploy.
 
