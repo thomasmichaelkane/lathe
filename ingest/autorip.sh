@@ -121,10 +121,10 @@ out = {
                     .isoformat().replace("+00:00", "Z"),
     "status": os.environ["RL_STATUS"],
     "detail": os.environ["RL_DETAIL"] or None,
-    # Where the album was moved to. librariand correlates a rip with its import
-    # outcome by checking whether this name is still sitting in
-    # /srv/quarantine — the ripper hands off before beets runs, so it cannot
-    # know the outcome itself. See §10 of docs/plan.md.
+    # Where the album was moved to. The ripper hands off before beets runs, so
+    # it cannot know the import outcome, and librariand deliberately does not
+    # infer one from this (§10). What it is used for: joining a quarantine
+    # entry back to the rip log that produced it, by basename.
     "handoff_path": os.environ["RL_HANDOFF"] or None,
     "artist": os.environ["RL_ARTIST"] or None,
     "album": os.environ["RL_ALBUM"] or None,

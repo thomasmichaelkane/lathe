@@ -157,15 +157,21 @@ def current() -> dict | None:
 
     device = unit[len("autorip@"):].removesuffix(".service")
 
-    # The staging directory abcde is writing into, if we can spot it. Best
+    # The work directory abcde is writing into, if we can spot it. Best
     # effort: it tells you something is happening, not how far along it is.
-    working = None
-    if RIPS_STAGING.is_dir():
-        dirs = [d for d in RIPS_STAGING.iterdir() if d.is_dir()]
+    # autorip.sh works in $RIPS/.work/<disc id>.<pid>, so that is where to
+    # look — the top of $RIPS only ever holds `.work` itself.
+    working = disc_id = None
+    work_root = RIPS_STAGING / ".work"
+    if work_root.is_dir():
+        dirs = [d for d in work_root.iterdir() if d.is_dir()]
         if dirs:
             working = max(dirs, key=lambda d: d.stat().st_mtime).name
+            head, _, pid = working.rpartition(".")
+            disc_id = head if head and pid.isdigit() else working
 
-    return {"unit": unit, "device": device, "working_dir": working}
+    return {"unit": unit, "device": device, "working_dir": working,
+            "disc_id": disc_id}
 
 
 def eject(device: str = "sr0") -> str:

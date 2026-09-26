@@ -35,7 +35,7 @@ class Item:
     audio_files: int
     bytes: int
     mtime: float
-    age_seconds: float
+    age_seconds: float    # since it ARRIVED, not since its files were written
 
     @property
     def stale(self) -> bool:
@@ -91,11 +91,17 @@ def entries() -> list[Item]:
             audio = len(_audio_paths(p))
             total = st.st_size
 
+        # ctime, not mtime. Everything reaches the inbox by rename, and a
+        # rename keeps the mtime the files had on the laptop — so an album
+        # ripped in 2019 would read as having waited seven years the moment
+        # it landed. The rename does update ctime, which is therefore when it
+        # arrived.
         out.append(Item(
             name=p.name, path=str(p), is_dir=p.is_dir(),
             audio_files=audio, bytes=total, mtime=st.st_mtime,
-            age_seconds=max(0.0, now - st.st_mtime),
+            age_seconds=max(0.0, now - st.st_ctime),
         ))
 
-    out.sort(key=lambda i: i.mtime)
+    # Longest-waiting first, by the same clock.
+    out.sort(key=lambda i: -i.age_seconds)
     return out

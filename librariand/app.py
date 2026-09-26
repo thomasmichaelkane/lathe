@@ -16,9 +16,9 @@ existed.
 
 **Runs as a systemd service on the host, not in a container.** §5 originally
 had it in compose. It moved because `/quarantine/{id}/resolve` re-runs a beets
-import, and beets is installed per-user with `uv` on the host; a container
-would have had to either ship its own beets (two installs to keep in step, one
-of which writes to the library) or drop the endpoint. Running on the host also
+import against the beets install.sh puts on the host; a container would have
+had to either ship its own beets (two installs to keep in step, one of which
+writes to the library) or drop the endpoint. Running on the host also
 means `install.sh` deploys it like everything else, with no image to rebuild.
 """
 
