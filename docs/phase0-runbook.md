@@ -222,7 +222,7 @@ sudo ./install.sh --dry-run            # read this before running it for real
 sudo ./install.sh
 
 cat /etc/lathe-release                 # VERSION=0.1.0
-sudo -u music beets-check.sh           # beets 2.13.1: all 11 plugins loaded
+sudo -u music beets-check.sh           # beets 2.13.1: all 12 plugins loaded
 ```
 
 **`install.sh` installs everything else, so don't do it by hand:**
@@ -302,16 +302,23 @@ checked out, which differs if you checked out a tag and never ran `install.sh`.
 
 ## 10. Fill in `/etc/default/lathe`
 
-`install.sh` just created it, empty, 0600, root-owned.
+`install.sh` just created it, 0600, root-owned, with a generated
+`LIBRARIAND_TOKEN` and everything else unset.
 
 ```sh
 sudo nano /etc/default/lathe
 ```
 
-Set `NTFY_URL` to a long random ntfy topic if you want phone pushes. Leave the
-`NAVIDROME_*` values until Phase 1 has created the account. Everything in there
-is optional — unset means that step is skipped and logged, never that an import
-fails.
+- **`LIBRARIAND_TOKEN`** is what the dashboard's login form asks for. Keep it
+  somewhere you can paste it from on your phone. librariand listens on the home
+  LAN as well as the tailnet, which is why it is not left blank.
+- **`LIBRARIAND_HOST`**, optionally: set it to `tailscale ip -4` to keep the
+  dashboard off the LAN altogether, then `sudo systemctl restart librariand`.
+- **`NTFY_URL`**: a long random ntfy topic, if you want phone pushes.
+- Leave the **`NAVIDROME_*`** values until Phase 1 has created the account.
+
+Everything but the token is optional — unset means that step is skipped and
+logged, never that an import fails.
 
 ---
 
@@ -328,8 +335,14 @@ sudo ./install.sh --dry-run            # "0 file(s) would change"
 and you can SSH in over Tailscale from your phone's hotspot.
 
 Then Phase 1: `docker compose -f compose/docker-compose.yml up -d`, and push the
-collection in with `ingest/push-music.sh` — **not** rsync straight into
-`/srv/inbox/`, for the reason in §12.
+collection in with `ingest/push-music.sh` from the laptop — **not** rsync
+straight into `/srv/inbox/`, for the reason in §12, and not a hand-rolled
+`rsync -a` into staging either: without `--no-group` the uploads keep your
+laptop's group and beets cannot move them.
+
+Navidrome needs no transcoding setup — Opus is built in — so leave
+`ND_ENABLETRANSCODINGCONFIG` alone, and don't edit the compose file on the Pi:
+`install.sh` refuses a checkout with local changes.
 
 ---
 
