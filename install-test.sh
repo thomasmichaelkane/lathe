@@ -115,6 +115,8 @@ has "deploys abcde.conf"        "/etc/abcde.conf"                         "$OUT"
 has "deploys the beets config"  "$SRV/config/beets/config.yaml"           "$OUT"
 has "deploys the udev rule"     "/etc/udev/rules.d/99-autorip.rules"      "$OUT"
 has "deploys the journald cap"  "/etc/systemd/journald.conf.d/lathe.conf" "$OUT"
+has "checks ffmpeg is installed"       "ffmpeg"                           "$OUT"
+has "checks python3-venv is installed" "python3-venv"                     "$OUT"
 has "installs beets into its own venv" "/usr/local/lib/beets"             "$OUT"
 has "and puts beet on the default PATH" "/usr/local/bin/beet -> "        "$OUT"
 has "and ships the beets health check" "/usr/local/bin/beets-check.sh"   "$OUT"
@@ -297,6 +299,25 @@ check "and your file is not touched" "$(sha256sum "$ENVF")" "$before"
 echo "LIBRARIAND_TOKEN=abc" >> "$ENVF"
 run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$ENVF"
 hasnt "once complete, nothing is flagged" "lacks setting" "$OUT"
+
+echo
+echo "system packages"
+
+# bash is installed on anything this runs on; the second name is not a package
+# anywhere. So one must read as present and the other as missing, which proves
+# the dpkg check discriminates rather than reporting everything one way.
+if command -v dpkg-query >/dev/null 2>&1; then
+  run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 \
+      APT_PACKAGES="bash lathe-no-such-package"
+  has   "an installed package is left alone"   "present    bash"                        "$OUT"
+  has   "a missing one is planned"             "WOULD INSTALL  lathe-no-such-package"   "$OUT"
+  hasnt "and nothing present is reinstalled"   "WOULD INSTALL  bash"                    "$OUT"
+else
+  ok "dpkg-query unavailable here — skipped (the Pi and CI both have it)"
+fi
+
+run_uninstall SRV="$SRV" MUSIC_USER="$(id -un)"
+has "uninstall leaves the apt packages alone" "shared, not lathe's to remove" "$OUT"
 
 echo
 echo "the venv follows requirements.txt"

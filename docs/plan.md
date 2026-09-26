@@ -1300,6 +1300,7 @@ because almost nothing runs from where it is checked out:
 | `librariand/requirements.txt` | installed into `/usr/local/lib/librariand/venv` |
 | `ingest/beets/requirements.txt` | installed into `/usr/local/lib/beets`, with `/usr/local/bin/beet` → its `bin/beet` |
 | `ingest/beets-check.sh` | `/usr/local/bin/beets-check.sh` — run as `music` after every deploy |
+| *(apt, only if missing)* | `ffmpeg`, `python3-venv` — installed, never upgraded, never removed by `--uninstall`. `git` stays manual: you need it to get `install.sh` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
 | `systemd/journald.conf.d/lathe.conf` | `/etc/systemd/journald.conf.d/` |
 | `lathe.env.example` | `/etc/default/lathe` — **once**, if absent; never overwritten |
