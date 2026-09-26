@@ -213,13 +213,19 @@ there is no good reason to leave it on for a server.
 ## 9. Clone and deploy
 
 ```sh
-sudo apt install -y git
+sudo apt install -y git python3-venv
 git clone https://github.com/thomasmichaelkane/lathe.git ~/lathe
 cd ~/lathe
+git checkout 0.1.0                     # a release, not main — see "Upgrading" below
 
 sudo ./install.sh --dry-run            # read this before running it for real
 sudo ./install.sh
+
+cat /etc/lathe-release                 # VERSION=0.1.0
 ```
+
+`python3-venv` is for librariand's dependencies, which `install.sh` installs
+into a venv — the one step that needs the network.
 
 **This also builds the `/srv` tree** — the §4 directories, owned by `music`,
 with setgid on `inbox/` and `staging/incoming/`. It is idempotent, so re-running
@@ -233,11 +239,46 @@ the mountpoint, where the drive hides it the moment it returns.
 From here on, **`install.sh` is the only thing that writes to a system path**
 (§11, §12). Never edit a deployed copy — edit here and re-run.
 
-An update later is:
+### Upgrading, later
+
+Releases are tags in `0.1.0` form, cut from `main` on the laptop:
 
 ```sh
-cd ~/lathe && git pull && sudo ./install.sh
+git tag 0.2.0 && git push origin 0.2.0
 ```
+
+GitHub Actions runs every test suite on that tag and publishes the release only
+if they pass. Then, on the Pi:
+
+```sh
+cd ~/lathe
+git fetch --tags
+git checkout 0.2.0                     # detached HEAD, on purpose: the Pi runs exactly a release
+sudo ./install.sh --dry-run
+sudo ./install.sh
+docker compose -f compose/docker-compose.yml up -d   # only matters if compose changed; a no-op otherwise
+cat /etc/lathe-release
+```
+
+**Rolling back is the same with an older tag** — `git checkout 0.1.0 && sudo
+./install.sh`. It works because a deploy only ever replaces code: `/srv`, the
+databases and `/etc/default/lathe` are never touched, so going back loses
+nothing.
+
+What `install.sh` takes care of on an upgrade, so you don't have to:
+
+- **librariand's dependencies.** Rebuilt whenever `librariand/requirements.txt`
+  changed, and retried on the next run if the install fails.
+- **New settings.** Your `/etc/default/lathe` is never overwritten, so it
+  names any setting the new release has that your file lacks. Add those by hand.
+- **Local edits.** It refuses to deploy a checkout with local changes — the
+  deploy globs directories, so a stray file would ship as part of the release.
+  `--allow-dirty` overrides it if you really mean it.
+
+**What version is running?** `cat /etc/lathe-release`, or the bottom of
+librariand's overview. That file is written only after a deploy finishes, so it
+records what is deployed — `git describe` in `~/lathe` only tells you what is
+checked out, which differs if you checked out a tag and never ran `install.sh`.
 
 ---
 

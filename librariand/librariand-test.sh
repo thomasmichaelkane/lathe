@@ -32,11 +32,12 @@ if [ -z "$PY" ]; then
 librariand-test: no Python with FastAPI available.
 
 On the Pi, install.sh builds one at /usr/local/lib/librariand/venv and this
-script finds it automatically. Anywhere else, make one:
+script finds it automatically. Anywhere else, make one at the repo root —
+this script looks for .venv there:
 
-    python3 -m venv /tmp/lbd-venv
-    /tmp/lbd-venv/bin/pip install fastapi uvicorn jinja2 python-multipart mediafile
-    LIBRARIAND_PYTHON=/tmp/lbd-venv/bin/python ./lathe/librariand/librariand-test.sh
+    python3 -m venv .venv
+    .venv/bin/pip install -r librariand/requirements.txt
+    ./librariand/librariand-test.sh
 EOF
   exit 1
 fi

@@ -29,8 +29,8 @@ fail=0
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$3', got '$2')"; fi; }
-has()  { if grep -qF "$2" "$3"; then ok "$1"; else bad "$1 (not found: $2)"; fi; }
-hasnt(){ if grep -qF "$2" "$3"; then bad "$1 (unexpectedly found: $2)"; else ok "$1"; fi; }
+has()  { if grep -qF -- "$2" "$3"; then ok "$1"; else bad "$1 (not found: $2)"; fi; }
+hasnt(){ if grep -qF -- "$2" "$3"; then bad "$1 (unexpectedly found: $2)"; else ok "$1"; fi; }
 
 # A copy of the repo whose beets pluginpath points inside the sandbox.
 REPO="$TMP/repo"
@@ -40,6 +40,7 @@ tar -C "$SCRIPT_DIR" --exclude=.git --exclude=.claude -cf - . | tar -C "$REPO" -
 sed -i "s|/srv/config/beets/plugins|$SRV/config/beets/plugins|" "$REPO/ingest/beets/config.yaml"
 
 OUT="$TMP/out.txt"
+LATHE_RELEASE_DEFAULT="/etc/lathe-release"
 
 run() {
   set +e
@@ -200,6 +201,115 @@ done < <(sed -n 's#^ *\(WOULD REMOVE\|removed\|absent\) *\(/[^ ]*[^/ ]\)\( .*\)\
 
 [ "$seen" -ge 8 ] || bad "only $seen uninstall targets seen — the parse above is wrong"
 [ "$missing" -eq 0 ] && ok "every file uninstall removes is one install ships ($seen targets)"
+
+echo
+echo "versions come from release tags"
+
+# A second copy of the repo, this time a real git repository, because version
+# derivation and the dirty check only exist when there is git to ask. The
+# pluginpath is rewritten BEFORE the commit so the tree starts clean.
+GREPO="$TMP/gitrepo"
+mkdir -p "$GREPO"
+tar -C "$SCRIPT_DIR" --exclude=.git --exclude=.claude -cf - . | tar -C "$GREPO" -xf -
+sed -i "s|/srv/config/beets/plugins|$SRV/config/beets/plugins|" "$GREPO/ingest/beets/config.yaml"
+g() { git -C "$GREPO" -c user.name=test -c user.email=test@example.invalid "$@"; }
+g init -q
+g add -A
+g commit -q -m "fixture"
+
+run_g() {
+  set +e
+  env "$@" bash "$GREPO/install.sh" --dry-run >"$OUT" 2>&1
+  LAST=$?
+  set -e
+}
+
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+has "with no tags yet, the version is the commit" "lathe install — $(g rev-parse --short HEAD)" "$OUT"
+
+g tag not-a-release
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+hasnt "a tag that is not x.y.z cannot pose as a release" "lathe install — not-a-release" "$OUT"
+
+g tag 0.1.0
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+has "on a release tag, the version is the tag" "lathe install — 0.1.0 (" "$OUT"
+has "and the release stamp is part of the plan" "$LATHE_RELEASE_DEFAULT" "$OUT"
+
+g commit -q --allow-empty -m "after the release"
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+has "past a tag, it says so rather than claiming the release" "lathe install — 0.1.0-1-g" "$OUT"
+
+echo
+echo "a dirty checkout is refused"
+
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+hasnt "a clean checkout raises nothing" "local changes" "$OUT"
+
+echo "# edited on the Pi" >> "$GREPO/ingest/abcde.conf"
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+has "an edited file is caught"          "a real run would refuse" "$OUT"
+has "and named"                         "ingest/abcde.conf"       "$OUT"
+has "and the version admits it"         "-dirty"                  "$OUT"
+g checkout -q -- ingest/abcde.conf
+
+# The case that makes this more than tidiness: the deploy globs, so an
+# untracked file in the right directory would ship as part of the release.
+touch "$GREPO/systemd/made-on-the-pi.service"
+run_g SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
+has "an untracked file is caught too"   "systemd/made-on-the-pi.service" "$OUT"
+set +e
+env SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 \
+  bash "$GREPO/install.sh" --dry-run --allow-dirty >"$OUT" 2>&1
+LAST=$?
+set -e
+check "--allow-dirty is accepted"       "$LAST" "0"
+hasnt "and silences the refusal"        "a real run would refuse" "$OUT"
+rm -f "$GREPO/systemd/made-on-the-pi.service"
+
+echo
+echo "new settings reach an existing /etc/default/lathe"
+
+ENVF="$TMP/lathe.env"
+cat > "$ENVF" <<'EOF'
+NTFY_URL=https://ntfy.sh/secret
+NAVIDROME_URL=http://localhost:4533
+NAVIDROME_USER=tom
+# NAVIDROME_PASS=   deliberately commented out
+EOF
+before="$(sha256sum "$ENVF")"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$ENVF"
+has   "a setting the template has and yours lacks is named" "LIBRARIAND_TOKEN" "$OUT"
+hasnt "a commented-out setting counts as seen"             "    NAVIDROME_PASS" "$OUT"
+hasnt "settings you have are not listed"                   "    NTFY_URL"       "$OUT"
+check "and your file is not touched" "$(sha256sum "$ENVF")" "$before"
+
+echo "LIBRARIAND_TOKEN=abc" >> "$ENVF"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LATHE_ENV="$ENVF"
+hasnt "once complete, nothing is flagged" "lacks setting" "$OUT"
+
+echo
+echo "the venv follows requirements.txt"
+
+LBD="$TMP/lbd"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LIBRARIAND_DIR="$LBD"
+has "with no venv, one is planned" "WOULD CREATE  $LBD/venv" "$OUT"
+
+mkdir -p "$LBD/venv/bin"
+printf '#!/bin/sh\n' > "$LBD/venv/bin/python" && chmod +x "$LBD/venv/bin/python"
+cp "$REPO/librariand/requirements.txt" "$LBD/venv/.installed-requirements"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LIBRARIAND_DIR="$LBD"
+has "matching requirements leave it alone" "unchanged  $LBD/venv" "$OUT"
+
+echo "somenewdep==1.0" >> "$REPO/librariand/requirements.txt"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LIBRARIAND_DIR="$LBD"
+has "a changed requirements.txt updates it" "WOULD UPDATE  $LBD/venv (requirements.txt changed)" "$OUT"
+
+# The failure mode this replaces: a venv that exists but never recorded a
+# successful install is not "done", so the next deploy must retry it.
+rm -f "$LBD/venv/.installed-requirements"
+run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1 LIBRARIAND_DIR="$LBD"
+has "a venv with no record of success is retried" "WOULD UPDATE  $LBD/venv" "$OUT"
 
 echo
 echo "-----------------------------------------"

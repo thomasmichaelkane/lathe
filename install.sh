@@ -9,6 +9,14 @@
 #   sudo ./install.sh --dry-run    show what would change, touch nothing
 #   sudo ./install.sh --force      deploy even while an ingest unit is running
 #   sudo ./install.sh --uninstall  remove everything this script deployed
+#   sudo ./install.sh --allow-dirty  deploy a checkout that has local changes
+#
+# Releases are git tags in 0.1.0 form. Upgrading is:
+#
+#   git fetch --tags && git checkout 0.2.0 && sudo ./install.sh
+#
+# and what is deployed is recorded in /etc/lathe-release — `cat` it. The
+# version comes from the tag, so there is no version file to forget to bump.
 #
 # --uninstall takes --dry-run too, and reading that first is the habit. It
 # removes only files this script put there, disables the triggers it enabled,
@@ -44,12 +52,14 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
 FORCE=0
 UNINSTALL=0
+ALLOW_DIRTY=0
 for arg in "$@"; do
   case "$arg" in
     -n|--dry-run) DRY_RUN=1 ;;
     -f|--force)   FORCE=1 ;;
     -u|--uninstall) UNINSTALL=1 ;;
-    -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
+    --allow-dirty) ALLOW_DIRTY=1 ;;
+    -h|--help)    sed -n '2,/^$/p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,6 +68,9 @@ MUSIC_USER="${MUSIC_USER:-music}"
 SRV="${SRV:-/srv}"
 LIBRARIAND_DIR="${LIBRARIAND_DIR:-/usr/local/lib/librariand}"
 BEETS_DIR="${BEETS_DIR:-$SRV/config/beets}"
+# Overridable for install-test.sh only; the defaults are the real paths.
+LATHE_ENV="${LATHE_ENV:-/etc/default/lathe}"
+LATHE_RELEASE="${LATHE_RELEASE:-/etc/lathe-release}"
 
 CHANGED=()
 CHANGED_UNITS=()
@@ -83,6 +96,31 @@ trap cleanup EXIT
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+
+# git, against the checkout this script lives in. `sudo ./install.sh` runs git
+# as root in a repository owned by your user, and git since 2.35.2 refuses that
+# outright ("detected dubious ownership") — which would make every version read
+# as "unknown" and let the dirty check below pass silently. safe.directory on
+# the command line is honoured for exactly this, and scopes the exemption to
+# this one repository instead of setting it globally for root.
+repo_git() { git -c safe.directory="$REPO" -C "$REPO" "$@"; }
+
+HAVE_GIT=0
+if command -v git >/dev/null 2>&1 && repo_git rev-parse --git-dir >/dev/null 2>&1; then
+  HAVE_GIT=1
+fi
+
+# The deployed version comes from the release tag, not from a file you edit, so
+# `git tag 0.1.0` is the whole of cutting a release. On a tag this reads
+# "0.1.0". Between tags it is git describe's "0.1.0-3-gabc1234", which is still
+# true and says plainly this is not a release; local changes append "-dirty".
+# Only tags shaped like a release count, so any other tag cannot masquerade.
+VERSION="unknown"
+COMMIT="unknown"
+if [ "$HAVE_GIT" -eq 1 ]; then
+  VERSION="$(repo_git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' --always --dirty 2>/dev/null || echo unknown)"
+  COMMIT="$(repo_git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+fi
 
 # ---------------------------------------------------------------- preconditions
 
@@ -140,6 +178,29 @@ if ! grep -qF "$BEETS_DIR/plugins" "$REPO/ingest/beets/config.yaml"; then
   die "ingest/beets/config.yaml pluginpath does not point at $BEETS_DIR/plugins"
 fi
 
+# A checkout with local changes is a deployed copy being edited in place —
+# §12's rule, one level up. It matters more than it looks, because several of
+# the deploy steps below are globs: an untracked systemd/foo.service or
+# librariand/foo.py made on the Pi would ship as though it were part of the
+# release, and /etc/lathe-release would still claim a clean version. So
+# refuse, name what is dirty, and let --allow-dirty override the rare
+# deliberate case.
+if [ "$HAVE_GIT" -eq 1 ] && [ "$ALLOW_DIRTY" -eq 0 ]; then
+  dirty="$(repo_git status --porcelain 2>/dev/null || true)"
+  if [ -n "$dirty" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      warn "the checkout has local changes — a real run would refuse:"
+      printf '%s\n' "$dirty" | sed 's/^/           /' >&2
+    else
+      die "the checkout at $REPO has local changes:
+$(printf '%s\n' "$dirty" | sed 's/^/         /')
+       Deploying would ship them as if they were part of $VERSION.
+       Commit them, discard them, or re-run with --allow-dirty if this really
+       is deliberate."
+    fi
+  fi
+fi
+
 # Replacing a script that is currently executing is the one genuine hazard in a
 # deploy. bash reads a script incrementally as it runs, so truncating one in
 # place (which is what cp does — same inode) makes a running shell resume at its
@@ -184,6 +245,8 @@ deployed_targets() {
 
   printf '%s\n' /etc/udev/rules.d/99-autorip.rules
   printf '%s\n' /etc/systemd/journald.conf.d/lathe.conf
+  # After an uninstall nothing is deployed, so nothing should claim a version.
+  printf '%s\n' "$LATHE_RELEASE"
 
   for f in "$REPO"/librariand/*.py; do
     case "$(basename "$f")" in
@@ -266,7 +329,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   say ""
   say "LEFT ALONE, deliberately:"
   say "  $SRV — the library, the tree, beets' library.db and state.pickle"
-  say "  /etc/default/lathe — your ntfy topic and Navidrome credentials"
+  say "  $LATHE_ENV — your ntfy topic, Navidrome login and librariand token"
   say "  the '$MUSIC_USER' user and group"
 
   # /etc/abcde.conf is the one deployed path this script did not invent: the
@@ -323,7 +386,7 @@ install_file() {
   return 0
 }
 
-say "lathe install — from $REPO"
+say "lathe install — $VERSION ($COMMIT) from $REPO"
 [ "$DRY_RUN" -eq 1 ] && say "(dry run — nothing will be written)"
 say ""
 
@@ -430,29 +493,41 @@ for sub_dir in templates static; do
   done
 done
 
-# Its dependencies live in a venv beside it. This is the one step in the script
-# that touches the network, so it is guarded, done once, and never fatal: a Pi
-# with no internet still gets a complete deploy of everything else, and
-# librariand simply fails to start until the venv exists.
-if [ "$DRY_RUN" -eq 1 ]; then
-  if [ -x "$LIBRARIAND_DIR/venv/bin/python" ]; then
-    say "  unchanged  $LIBRARIAND_DIR/venv"
+# Its dependencies live in a venv beside it, installed from requirements.txt.
+#
+# This used to be built once and never touched again, which is the same class of
+# bug as a module missing from the deploy: a release that adds or bumps a
+# dependency would ship code importing something the venv does not have, and
+# librariand would die on start. So the venv is brought up to date whenever
+# requirements.txt differs from the copy recorded at the last SUCCESSFUL
+# install — recorded only after pip finishes, so a failed install is retried on
+# the next deploy rather than mistaken for done.
+#
+# The one step that touches the network, so never fatal: with no internet
+# everything else still deploys, and librariand fails to start until a later
+# run gets through.
+REQ="$REPO/librariand/requirements.txt"
+VENV="$LIBRARIAND_DIR/venv"
+REQ_STAMP="$VENV/.installed-requirements"
+if [ -x "$VENV/bin/python" ] && [ -f "$REQ_STAMP" ] && cmp -s "$REQ" "$REQ_STAMP"; then
+  say "  unchanged  $VENV"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  if [ -x "$VENV/bin/python" ]; then
+    say "  WOULD UPDATE  $VENV (requirements.txt changed)"
   else
-    say "  WOULD CREATE  $LIBRARIAND_DIR/venv (downloads fastapi, uvicorn, jinja2)"
+    say "  WOULD CREATE  $VENV (downloads librariand's dependencies)"
   fi
-elif [ -x "$LIBRARIAND_DIR/venv/bin/python" ]; then
-  say "  unchanged  $LIBRARIAND_DIR/venv"
 else
-  say "  creating   $LIBRARIAND_DIR/venv — this needs the network, once"
-  if python3 -m venv "$LIBRARIAND_DIR/venv" >/dev/null 2>&1 \
-     && "$LIBRARIAND_DIR/venv/bin/pip" install --quiet --disable-pip-version-check \
-          fastapi uvicorn jinja2 python-multipart mediafile >/dev/null 2>&1; then
-    say "  created    $LIBRARIAND_DIR/venv"
+  say "  installing librariand's dependencies — this needs the network"
+  if { [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV" >/dev/null 2>&1; } \
+     && "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$REQ" >/dev/null 2>&1; then
+    cp "$REQ" "$REQ_STAMP"
+    say "  ready      $VENV"
     librariand_changed=1
   else
-    warn "could not build $LIBRARIAND_DIR/venv."
+    warn "could not install librariand's dependencies into $VENV."
     warn "Everything else deployed fine; librariand will not start until this"
-    warn "succeeds. Needs python3-venv installed and a working network:"
+    warn "succeeds, and the next run retries it. Needs python3-venv and a network:"
     warn "  sudo apt install -y python3-venv && sudo ./install.sh"
   fi
 fi
@@ -493,63 +568,61 @@ if install_file "$REPO/systemd/journald.conf.d/lathe.conf" \
   JOURNALD_CHANGED=1
 fi
 
-# Shared by autorip@.service and inbox-import.service. Holds a live ntfy topic
-# and a Navidrome password, neither of which belongs in the repo. Created once
-# with everything unset — both scripts treat empty as "skip that step quietly"
-# and log to the journal instead — and never touched again.
-say "notification config:"
-if [ -e /etc/default/lathe ]; then
-  say "  preserved  /etc/default/lathe (never overwritten)"
+# Settings shared by the ripper, the importer and librariand. Holds a live ntfy
+# topic, a Navidrome password and librariand's token, none of which belong in
+# the repo. Seeded from lathe.env.example once, with everything unset, and
+# never overwritten.
+#
+# Never overwriting is right for credentials but means a release that adds a
+# setting ships it to nobody. So on every deploy the template's settings are
+# compared with yours and any you lack are named — the file itself is not
+# touched. A setting present but commented out counts as present: you have
+# seen it and chosen.
+TEMPLATE="$REPO/lathe.env.example"
+say "settings ($LATHE_ENV):"
+if [ -e "$LATHE_ENV" ]; then
+  say "  preserved  $LATHE_ENV (never overwritten)"
+  if [ -r "$LATHE_ENV" ]; then
+    missing_keys=()
+    while IFS= read -r key; do
+      grep -qE "^[[:space:]]*#?[[:space:]]*${key}=" "$LATHE_ENV" || missing_keys+=("$key")
+    done < <(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$TEMPLATE")
+    if [ "${#missing_keys[@]}" -gt 0 ]; then
+      warn "$LATHE_ENV lacks setting(s) this release knows about:"
+      for k in "${missing_keys[@]}"; do warn "    $k"; done
+      warn "Add them by hand; lathe.env.example says what each one does."
+      warn "Your file has not been changed."
+    fi
+  else
+    say "  (not readable as $(id -un), so new settings were not checked — run with sudo)"
+  fi
 elif [ "$DRY_RUN" -eq 1 ]; then
-  say "  WOULD CREATE  /etc/default/lathe (all settings unset)"
+  say "  WOULD CREATE  $LATHE_ENV (from lathe.env.example, all settings unset)"
 else
-  mkdir -p /etc/default
-  tmp="$(mktemp /etc/default/.lathe-install.XXXXXX)"
+  mkdir -p "$(dirname "$LATHE_ENV")"
+  tmp="$(mktemp "$(dirname "$LATHE_ENV")/.lathe-install.XXXXXX")"
   TMPFILES+=("$tmp")
-  cat >"$tmp" <<'EOF'
-# Environment for autorip@.service and inbox-import.service.
-#
-# NOT in the lathe repo, and 0600, because both values below are live
-# credentials. Everything here is optional: unset means the corresponding step
-# is skipped and logged, never that an import or a rip fails.
-
-# An ntfy topic URL is a capability — anyone holding it can push to your phone,
-# so make it long and random. autorip.sh pushes rip FAILURES here;
-# inbox-import.sh pushes the import summary (§6.4).
-#
-#   NTFY_URL=https://ntfy.sh/some-long-random-string
-NTFY_URL=
-
-# Poking Navidrome after an import drops the delay before a new album appears
-# from up to ND_SCANSCHEDULE (6h) to seconds. Without it nothing breaks; the
-# scheduled scan and the filesystem watcher still find everything.
-#
-# A Navidrome login. Subsonic token auth means the password is not sent over
-# the wire, but it is stored here in plain text — which is what the 0600 and
-# root ownership on this file are for.
-#
-#   NAVIDROME_URL=http://localhost:4533
-#   NAVIDROME_USER=tom
-#   NAVIDROME_PASS=
-NAVIDROME_URL=
-NAVIDROME_USER=
-NAVIDROME_PASS=
-
-# librariand's dashboard and API. Unset means no auth at all: anyone who can
-# reach this machine on the tailnet can approve, merge and delete. That is a
-# defensible choice with no ports exposed, which is why it is allowed — but it
-# is a choice, and every page of the dashboard says so until you make it.
-#
-# Generate one with:  openssl rand -hex 24
-#
-#   LIBRARIAND_TOKEN=...
-LIBRARIAND_TOKEN=
-EOF
+  cat "$TEMPLATE" >"$tmp"
   chmod 0600 "$tmp"
   chown root:root "$tmp"
-  mv -f "$tmp" /etc/default/lathe
-  say "  created    /etc/default/lathe (all unset — edit to enable pushes and rescans)"
+  mv -f "$tmp" "$LATHE_ENV"
+  say "  created    $LATHE_ENV (all unset — edit to enable pushes, rescans and a token)"
 fi
+
+# What is deployed, written where it can be read without the checkout:
+#
+#   cat /etc/lathe-release
+#
+# librariand shows the same file on its overview. Written LAST, so it only ever
+# names a version once everything above deployed; set -e means a failure
+# earlier leaves the previous stamp in place, which is then still the truth.
+# VERSION and COMMIT only — a redeploy of the same release reads as unchanged,
+# and the file's mtime says when it was deployed.
+say "release ($LATHE_RELEASE):"
+release_tmp="$(mktemp)"
+TMPFILES+=("$release_tmp")
+printf 'VERSION=%s\nCOMMIT=%s\n' "$VERSION" "$COMMIT" >"$release_tmp"
+install_file "$release_tmp" "$LATHE_RELEASE" 0644 root:root || true
 
 # -------------------------------------------------------------------- reloads
 
