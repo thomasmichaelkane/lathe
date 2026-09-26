@@ -732,20 +732,34 @@ if [ -e "$LATHE_ENV" ]; then
       warn "Add them by hand; lathe.env.example says what each one does."
       warn "Your file has not been changed."
     fi
+    # librariand listens on every interface, the home LAN included — not just
+    # the tailnet. With no token, anyone on your wifi can delete from
+    # quarantine. Allowed, because it is your network, but never silently.
+    if grep -qE '^[[:space:]]*LIBRARIAND_TOKEN=[[:space:]]*$' "$LATHE_ENV"; then
+      warn "LIBRARIAND_TOKEN is empty: the dashboard is open to anyone who can"
+      warn "reach port 8080, which includes your home LAN, not only the tailnet."
+      warn "Set one with:  openssl rand -hex 24"
+    fi
   else
     say "  (not readable as $(id -un), so new settings were not checked — run with sudo)"
   fi
 elif [ "$DRY_RUN" -eq 1 ]; then
-  say "  WOULD CREATE  $LATHE_ENV (from lathe.env.example, all settings unset)"
+  say "  WOULD CREATE  $LATHE_ENV (from lathe.env.example, with a generated LIBRARIAND_TOKEN)"
 else
+  # Seeded with a random librariand token rather than none. librariand binds
+  # every interface, so "unset" would mean the dashboard — which can delete —
+  # is open to the home LAN from the first boot. Blank it by hand if you
+  # really want it open; install.sh will keep saying so.
   mkdir -p "$(dirname "$LATHE_ENV")"
   tmp="$(mktemp "$(dirname "$LATHE_ENV")/.lathe-install.XXXXXX")"
   TMPFILES+=("$tmp")
-  cat "$TEMPLATE" >"$tmp"
+  token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  sed "s/^LIBRARIAND_TOKEN=$/LIBRARIAND_TOKEN=$token/" "$TEMPLATE" >"$tmp"
   chmod 0600 "$tmp"
   chown root:root "$tmp"
   mv -f "$tmp" "$LATHE_ENV"
-  say "  created    $LATHE_ENV (all unset — edit to enable pushes, rescans and a token)"
+  say "  created    $LATHE_ENV (librariand token generated; the rest unset)"
+  say "             read the token with:  sudo grep LIBRARIAND_TOKEN $LATHE_ENV"
 fi
 
 # Torrent secrets, for the opt-in gluetun + aria2 pair in compose.
@@ -837,19 +851,30 @@ fi
 
 for unit_name in "${ACTIVATABLE[@]:-}"; do
   [ -n "$unit_name" ] || continue
+  # Never fatal. A unit that fails to START is still enabled, and will come
+  # up once what it needs arrives — librariand with no venv yet, on a first
+  # deploy with no network, is the usual case. Under set -e a failure here
+  # used to abort the deploy before udev and journald were reloaded.
   if ! systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
     say "enabling $unit_name"
-    systemctl enable --now "$unit_name"
+    systemctl enable --now "$unit_name" \
+      || warn "$unit_name is enabled but did not start — see: journalctl -u $unit_name"
   elif printf '%s\n' "${CHANGED_UNITS[@]:-}" | grep -qxF "$unit_name"; then
-    systemctl restart "$unit_name"
-    say "restarted $unit_name (its unit file changed)"
+    if systemctl restart "$unit_name"; then
+      say "restarted $unit_name (its unit file changed)"
+    else
+      warn "$unit_name did not restart — see: journalctl -u $unit_name"
+    fi
   fi
 done
 
+# Reload only — no `udevadm trigger`. The rule acts on media-change events,
+# which are all in the future, so there is nothing to replay. And trigger's
+# default action IS "change": with an audio CD in the tray at deploy time,
+# replaying it would start a rip.
 if [ "$UDEV_CHANGED" -eq 1 ]; then
-  say "reloading udev"
+  say "reloading udev rules"
   udevadm control --reload
-  udevadm trigger --subsystem-match=block
 fi
 
 # A restart applies the new cap and trims the journal down to it straight away.
