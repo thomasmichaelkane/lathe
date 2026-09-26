@@ -63,7 +63,7 @@
      holding the CD it is one action: "try again". #}
   <div class="field">
     <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
-           placeholder="MBID or Bandcamp URL (optional)"
+           placeholder="MusicBrainz ID"
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="primary" data-action="retry"
             data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Retry</button>
