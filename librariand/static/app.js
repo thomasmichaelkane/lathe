@@ -37,7 +37,7 @@ async function call(method, url, body) {
  * failure. No optimistic UI — with file moves, a wrong guess about what
  * happened is worse than a reload. */
 async function act(btn, method, url, body, okMsg) {
-  const card = btn.closest(".card, .group");
+  const card = btn.closest(".card, .group, .tile");
   const label = btn.textContent;
   btn.disabled = true;
   card && card.classList.add("spin");
@@ -62,9 +62,19 @@ document.addEventListener("click", (ev) => {
   const name = encodeURIComponent(a.name || "");
 
   switch (a.action) {
-    case "retry":
+    /* One button, two endpoints. With an identifier it re-imports against
+     * exactly that release (/resolve); blank, it hands the entry back to the
+     * inbox for the normal two-pass import (/retry). */
+    case "retry": {
+      const input = document.getElementById(`id-${a.idx}`);
+      const identifier = ((input && input.value) || "").trim();
+      if (identifier) {
+        return act(btn, "POST", `/quarantine/${name}/resolve`, { identifier },
+                   "re-imported");
+      }
       return act(btn, "POST", `/quarantine/${name}/retry`, undefined,
                  "moved back to the inbox");
+    }
 
     case "drop":
       if (!confirm(`Delete "${a.name}" permanently?\n\nThe files are removed from disk. This cannot be undone.`)) return;
@@ -77,16 +87,33 @@ document.addEventListener("click", (ev) => {
                  "merged and handed back to the inbox");
     }
 
-    case "resolve": {
-      const input = document.getElementById(`id-${a.idx}`);
-      const identifier = (input.value || "").trim();
-      if (!identifier) {
-        input.focus();
-        return flash("paste a MusicBrainz release ID or a Bandcamp album URL", true);
-      }
-      return act(btn, "POST", `/quarantine/${name}/resolve`, { identifier },
-                 "re-imported");
+    case "add-open": {
+      const form = document.getElementById("add-form");
+      form.hidden = !form.hidden;
+      btn.setAttribute("aria-expanded", String(!form.hidden));
+      if (!form.hidden) document.getElementById("magnet").focus();
+      return;
     }
+
+    case "add": {
+      const input = document.getElementById("magnet");
+      const magnet = (input.value || "").trim();
+      if (!magnet) { input.focus(); return flash("paste a magnet link", true); }
+      return act(btn, "POST", "/torrents", { magnet });
+    }
+
+    case "move":
+      return act(btn, "POST", `/torrents/${name}/move`);
+
+    case "resume":
+      return act(btn, "POST", `/torrents/${name}/resume`);
+
+    case "cancel":
+      if (!confirm(`Cancel "${a.label}" and delete what it downloaded?`)) return;
+      return act(btn, "DELETE", `/torrents/${name}`);
+
+    case "nudge":
+      return act(btn, "POST", "/inbox/nudge");
 
     case "approve":
       return act(btn, "POST", `/fetched/${name}/approve`, undefined,
@@ -98,13 +125,35 @@ document.addEventListener("click", (ev) => {
   }
 });
 
-/* Enter in a resolve field is the same as pressing the button next to it. */
+/* Live progress on the Fetch page. Re-renders #torrents from the server
+ * rather than formatting numbers here, so there is one template for a card,
+ * not two. Stops by itself once nothing is downloading. */
+async function pollTorrents() {
+  const list = document.getElementById("torrents");
+  if (!list || !list.querySelector('[data-active="1"]')) return;
+  try {
+    const res = await fetch(location.pathname, { cache: "no-store" });
+    const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+    const fresh = doc.getElementById("torrents");
+    // Never swap a card out from under a click in progress.
+    if (fresh && !list.querySelector(".spin")) list.replaceWith(fresh);
+  } catch { /* offline for a moment; try again next tick */ }
+  setTimeout(pollTorrents, 3000);
+}
+setTimeout(pollTorrents, 3000);
+
+/* Enter in an ID field is the same as pressing Retry next to it; in the
+ * magnet field, the same as pressing Fetch. */
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
+  if (ev.target.id === "magnet") {
+    ev.preventDefault();
+    return document.querySelector('[data-action="add"]')?.click();
+  }
   const input = ev.target.closest("input[data-resolve-for]");
   if (!input) return;
   ev.preventDefault();
   document.querySelector(
-    `[data-action="resolve"][data-idx="${input.dataset.resolveFor}"]`
+    `[data-action="retry"][data-idx="${input.dataset.resolveFor}"]`
   )?.click();
 });

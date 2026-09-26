@@ -46,6 +46,9 @@ from pathlib import Path
 QUARANTINE = Path(os.environ.get("QUARANTINE", "/srv/quarantine"))
 INBOX = Path(os.environ.get("INBOX", "/srv/inbox"))
 RIP_LOGS = Path(os.environ.get("RIP_LOGS", "/srv/logs/rips"))
+# Written by the quarantine_match beets plugin: what beets thought of each
+# album it skipped, one JSON per entry name.
+MATCHES = Path(os.environ.get("MATCHES", "/srv/logs/matches"))
 
 AUDIO_SUFFIXES = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wv", ".ape"}
 
@@ -140,6 +143,9 @@ class Entry:
     mtime: float
     tags: Tags
     rip_log: dict | None = None
+    # beets' best candidate for this entry, per metadata source — see
+    # read_match. None for anything quarantined before the plugin existed.
+    match: dict | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -233,6 +239,34 @@ def _match_rip_log(name: str, logs: dict[str, dict]) -> dict | None:
     return None
 
 
+# inbox-import.sh and _free_name both disambiguate a taken name the same way.
+_COLLISION_SUFFIX = re.compile(r"\.\d{14}$")
+
+
+def read_match(name: str) -> dict | None:
+    """What beets made of this entry the last time it tried to import it.
+
+    Returns the record with a `best` key added: the source slot with the
+    highest similarity, which is the one worth showing. A slot with no
+    candidate still counts as tried, so a record whose every source found
+    nothing comes back with `best` set to None rather than as no record.
+    """
+    for candidate in (name, _COLLISION_SUFFIX.sub("", name)):
+        try:
+            record = json.loads((MATCHES / f"{candidate}.json").read_text())
+            break
+        except (OSError, ValueError):
+            continue
+    else:
+        return None
+    sources = record.get("sources") or {}
+    scored = [(s, slot) for s, slot in sources.items()
+              if slot.get("similarity") is not None]
+    best = max(scored, key=lambda s: s[1]["similarity"], default=None)
+    record["best"] = {"source": best[0], **best[1]} if best else None
+    return record
+
+
 def entries() -> list[Entry]:
     """Everything currently sitting in quarantine.
 
@@ -256,6 +290,7 @@ def entries() -> list[Entry]:
             mtime=p.stat().st_mtime,
             tags=read_tags(audio),
             rip_log=_match_rip_log(p.name, logs),
+            match=read_match(p.name),
         )
         _annotate(e)
         out.append(e)
@@ -637,6 +672,8 @@ def drop(names: list[str], yes: bool = False) -> str:
             shutil.rmtree(p)
         else:
             p.unlink()
+        # Its match record describes files that no longer exist.
+        (MATCHES / f"{p.name}.json").unlink(missing_ok=True)
     return f"deleted {len(targets)} entries"
 
 

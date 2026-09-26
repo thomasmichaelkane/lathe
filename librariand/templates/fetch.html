@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Fetch — librariand{% endblock %}
+
+{% block body %}
+
+{% if not aria2_online %}
+<div class="banner" style="background:#2a1210;border-color:#5a2320;border-left-color:var(--alarm);">
+  <strong>aria2 is not reachable</strong> at <code>{{ aria2_rpc }}</code>.
+  New downloads cannot start; finished ones can still be moved.
+</div>
+{% endif %}
+
+{# Outside #torrents on purpose: the list below is swapped out every few
+   seconds while anything downloads, and a half-typed magnet must survive it. #}
+<div class="fetch-add">
+  <button class="primary add-open" data-action="add-open" aria-expanded="false"
+          {{ 'disabled' if not aria2_online }}>+</button>
+  <div class="field" id="add-form" hidden>
+    <input type="text" id="magnet" placeholder="magnet:?xt=urn:btih:…"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="primary" data-action="add">Fetch</button>
+  </div>
+</div>
+
+<div id="torrents">
+{% for t in torrents %}
+{% set css = {'complete': 'live', 'error': 'alarm', 'interrupted': 'warn'}.get(t.state, 'info') %}
+<div class="card {{ css }}" data-torrent="{{ t.id }}" data-active="{{ 1 if t.active else 0 }}">
+  <h3>{{ t.name }}</h3>
+  <div class="bar"><span class="{{ 'warn' if t.state == 'interrupted' else ('alarm' if t.state == 'error' else '') }}"
+       style="width: {{ t.progress }}%"></span></div>
+  <div class="meta" style="margin-top:7px;">
+    {% if t.state == 'metadata' %}
+      <span>Finding the torrent's details</span>
+      <span>{{ t.peers }} peer{{ '' if t.peers == 1 else 's' }}</span>
+      <span>waited {{ ((now - t.added_at) / 60)|round|int }} min</span>
+    {% elif t.state == 'downloading' %}
+      <span>{{ t.progress|round|int }}%</span>
+      <span>{{ human(t.done_bytes) }} of {{ human(t.total_bytes) }}</span>
+      <span>{{ human(t.speed) }}/s</span>
+      <span>{{ t.peers }} peer{{ '' if t.peers == 1 else 's' }}</span>
+      {% if t.eta_seconds is not none %}<span>{{ (t.eta_seconds / 60)|round(0, 'ceil')|int }} min left</span>{% endif %}
+    {% elif t.state == 'verifying' %}
+      <span>Checking the download</span>
+    {% elif t.state == 'paused' %}
+      <span>Paused in aria2</span>
+    {% elif t.state == 'complete' %}
+      <span>Done</span>
+      <span>{{ human(t.total_bytes) }}</span>
+      <span>{{ t.audio_files }} audio file{{ '' if t.audio_files == 1 else 's' }}</span>
+    {% elif t.state == 'error' %}
+      <span>{{ t.error }}</span>
+    {% elif t.state == 'interrupted' %}
+      <span>Interrupted — aria2 lost track of it</span>
+    {% else %}
+      <span>Status unknown while aria2 is unreachable</span>
+    {% endif %}
+  </div>
+
+  {% if t.state == 'complete' and not t.audio_files %}
+  <div class="why bad">
+    No audio files{% if t.archives %} — it is packed as {{ t.archives|join(', ') }},
+    which beets cannot import{% endif %}. Moving it will land it in quarantine.
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    {% if t.state == 'complete' %}
+    <button class="primary" data-action="move" data-name="{{ t.id }}">Move to inbox</button>
+    <button class="danger" data-action="cancel" data-name="{{ t.id }}" data-label="{{ t.name }}">Delete</button>
+    {% elif t.state in ('error', 'interrupted') %}
+    <button class="primary" data-action="resume" data-name="{{ t.id }}">Resume</button>
+    <button class="danger" data-action="cancel" data-name="{{ t.id }}" data-label="{{ t.name }}">Delete</button>
+    {% else %}
+    <button class="danger" data-action="cancel" data-name="{{ t.id }}" data-label="{{ t.name }}">Cancel</button>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+</div>
+
+{% if not torrents and not entries %}
+<div class="empty">
+  <strong>Nothing fetching.</strong>
+  Press + and paste a magnet link.
+</div>
+{% endif %}
+
+{% if entries %}
+<h2 class="section">From farfetchd</h2>
+{% endif %}
+
+{% for e in entries %}
+<div class="card {{ 'alarm' if not e.readable else ('warn' if e.warnings else 'good') }}">
+
+  {% if not e.readable %}
+    <h3>{{ e.id }}</h3>
+    <div class="why bad">{{ e.problem }}</div>
+    <div class="actions">
+      <button class="danger" data-action="reject" data-name="{{ e.id }}">Delete</button>
+    </div>
+
+  {% else %}
+    <h3>{{ e.release.album or e.id }}</h3>
+    <div class="meta">
+      {% if e.release.artist %}<span>{{ e.release.artist }}</span>{% endif %}
+      {% if e.release.year %}<span>{{ e.release.year }}</span>{% endif %}
+      <span>{{ e.audio_files }} file{{ '' if e.audio_files == 1 else 's' }}{% if e.release.track_count %} / {{ e.release.track_count }} claimed{% endif %}</span>
+      <span>{{ human(e.bytes) }}</span>
+      {% if e.release.format %}<span class="pill">{{ e.release.format }}</span>{% endif %}
+      {% if e.clean %}<span class="pill ok">checks passed</span>{% endif %}
+    </div>
+
+    {% if e.source.url %}
+    <div class="meta" style="margin-top:5px;">
+      <a href="{{ e.source.url }}" target="_blank" rel="noopener noreferrer"
+         class="mono">{{ e.source.site or e.source.url }}</a>
+      {% if e.source.adapter %}<span class="pill">{{ e.source.adapter }}</span>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if e.warnings %}
+    <ul class="notes">{% for w in e.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    {% if e.notes %}
+    <div class="why">{% for n in e.notes %}{{ n }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+    {% endif %}
+
+    <div class="actions">
+      <button class="primary" data-action="approve" data-name="{{ e.id }}">Approve</button>
+      <button class="danger"  data-action="reject"  data-name="{{ e.id }}">Reject</button>
+    </div>
+  {% endif %}
+
+</div>
+{% endfor %}
+
+{% endblock %}

@@ -24,8 +24,10 @@ means `install.sh` deploys it like everything else, with no image to rebuild.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -41,6 +43,7 @@ import quarantine
 import resolve as resolve_mod
 import rips
 import system
+import torrents
 
 HERE = Path(__file__).resolve().parent
 
@@ -57,6 +60,15 @@ app = FastAPI(
 )
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+
+# Appended to /static URLs as ?v=. StaticFiles sends no Cache-Control, so a
+# browser heuristically reuses the old stylesheet after an upgrade and renders
+# new markup with old CSS. Hashing the contents changes the URL exactly when
+# the files change.
+_static = hashlib.sha1()
+for _f in sorted((HERE / "static").iterdir()):
+    _static.update(_f.read_bytes())
+templates.env.globals["asset_v"] = _static.hexdigest()[:10]
 
 
 # --------------------------------------------------------------------- auth
@@ -232,6 +244,69 @@ async def api_inbox():
     return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
+class MagnetBody(BaseModel):
+    magnet: str
+
+
+@app.get("/torrents", dependencies=[Depends(require_api)])
+def api_torrents():
+    downloads, online = torrents.entries()
+    return {"aria2": online,
+            "torrents": [asdict(t) | {"finished": t.finished, "active": t.active}
+                         for t in downloads]}
+
+
+@app.post("/torrents", dependencies=[Depends(require_api)])
+def api_torrent_add(body: MagnetBody):
+    try:
+        return {"ok": True, **torrents.add(body.magnet)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
+@app.post("/torrents/{tid}/move", dependencies=[Depends(require_api)])
+def api_torrent_move(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.move(tid)}
+    except torrents.BadId as exc:
+        return _fail(exc)
+    except torrents.TorrentError as exc:
+        return _fail(exc, 409)
+
+
+@app.post("/torrents/{tid}/resume", dependencies=[Depends(require_api)])
+def api_torrent_resume(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.resume(tid)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
+@app.delete("/torrents/{tid}", dependencies=[Depends(require_api)])
+def api_torrent_cancel(tid: str):
+    try:
+        return {"ok": True, "detail": torrents.cancel(tid)}
+    except torrents.TorrentError as exc:
+        return _fail(exc)
+
+
+@app.post("/inbox/nudge", dependencies=[Depends(require_api)])
+async def api_inbox_nudge():
+    # With the watcher down a nudge fires nothing, and saying "started" would
+    # be a lie. Fixing that needs root, so say what to run instead. None means
+    # systemctl could not be asked — try anyway rather than refuse.
+    if system._unit_active("inbox.path") is False:
+        return _fail(RuntimeError(
+            "inbox.path is not active, so nothing can start the import from "
+            "here. On the Pi: sudo systemctl enable --now inbox.path"), 409)
+    try:
+        inbox_mod.nudge()
+    except OSError as exc:
+        return _fail(exc, 500)
+    return {"ok": True, "detail": "import started — the inbox should drain "
+                                  "within a few minutes"}
+
+
 @app.get("/rips", dependencies=[Depends(require_api)])
 async def api_rips():
     # `passed` and `needs_attention` are properties, so asdict() does not carry
@@ -256,19 +331,28 @@ async def api_eject(body: EjectBody | None = None):
 def _page(request: Request, name: str, **ctx) -> HTMLResponse:
     # `counts` is on every page because the nav badges are on every page.
     # system.pending_counts() is the cheap directory count, not the full scan.
+    # The Fetch badge counts both kinds of thing waiting on you there: a
+    # finished torrent to move, and a farfetchd download to review.
+    counts = system.pending_counts()
+    counts["fetch"] = counts["fetched"] + torrents.ready_count()
     return templates.TemplateResponse(
         request, name,
         {"no_auth": not TOKEN, "human": quarantine._human,
-         "counts": system.pending_counts(), **ctx},
+         "counts": counts, **ctx},
     )
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
 async def ui_index(request: Request):
+    # The inbox has no page of its own: it should be empty, so all anyone needs
+    # is whether it is, how long the oldest item has waited, and a way to kick
+    # the importer. That is one tile on the overview.
+    items = inbox_mod.entries()
+    oldest = round(items[0].age_seconds / 60) if items else None
     return _page(request, "index.html",
                  health=system.health(), stats=system.stats(),
-                 nav="overview")
+                 inbox_oldest_min=oldest, nav="overview")
 
 
 # One card per entry, colour-coded by what is actually wrong with it. The
@@ -301,6 +385,29 @@ def _issue(entry) -> tuple[str, str, int]:
     return "info", "no match", 4
 
 
+def _card_title(entry) -> str:
+    """The album tag, or a stable stand-in when the files have none.
+
+    Hashed from the entry name rather than random so a card keeps its title
+    across reloads — it is how you find the same card again.
+    """
+    if entry.tags.album:
+        return entry.tags.album
+    return "Import " + hashlib.sha1(entry.name.encode()).hexdigest()[:6]
+
+
+def _score_css(best: dict | None) -> str:
+    """Colour a similarity by where it sits against beets' own thresholds.
+
+    96% is strong_rec_thresh (0.04) — what beets would have auto-accepted had
+    nothing else capped it; 75% is beets' default medium_rec_thresh (0.25).
+    """
+    if not best:
+        return "none"
+    s = best["similarity"]
+    return "ok" if s >= 96 else "warn" if s >= 75 else "alarm"
+
+
 @app.get("/ui/quarantine", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
 async def ui_quarantine(request: Request):
@@ -316,26 +423,29 @@ async def ui_quarantine(request: Request):
     cards = []
     for e in quarantine.entries():
         css, label, rank = _issue(e)
+        best = (e.match or {}).get("best")
         cards.append({"e": e, "css": css, "label": label, "rank": rank,
-                      "group": group_of.get(e.name)})
+                      "group": group_of.get(e.name),
+                      "title": _card_title(e),
+                      "best": best,
+                      "score_css": _score_css(best)})
     cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
 
     return _page(request, "quarantine.html", cards=cards, nav="quarantine")
 
 
-@app.get("/ui/inbox", response_class=HTMLResponse, include_in_schema=False,
+@app.get("/ui/fetch", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
-async def ui_inbox(request: Request):
-    # No watcher state here any more — that warning lives on the overview with
-    # the other two, and asking systemd for it on every inbox page load was a
-    # subprocess for something nothing rendered.
-    return _page(request, "inbox.html", entries=inbox_mod.entries(), nav="inbox")
+def ui_fetch(request: Request):
+    downloads, online = torrents.entries()
+    return _page(request, "fetch.html", torrents=downloads, aria2_online=online,
+                 aria2_rpc=torrents.ARIA2_RPC, entries=fetched.entries(),
+                 now=time.time(), nav="fetch")
 
 
-@app.get("/ui/fetched", response_class=HTMLResponse, include_in_schema=False,
-         dependencies=[Depends(require_page)])
-async def ui_fetched(request: Request):
-    return _page(request, "fetched.html", entries=fetched.entries(), nav="fetched")
+@app.get("/ui/fetched", include_in_schema=False)
+async def ui_fetched_moved():
+    return RedirectResponse("/ui/fetch", status_code=301)
 
 
 @app.get("/ui/rips", response_class=HTMLResponse, include_in_schema=False,

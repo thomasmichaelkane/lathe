@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Quarantine — librariand{% endblock %}
 
+{% macro val(v) -%}
+{% if v not in (None, "") %}{{ v }}{% else %}<span class="missing">missing</span>{% endif %}
+{%- endmacro %}
+
 {% block body %}
 
 {% if not cards %}
@@ -11,37 +15,61 @@
 {% endif %}
 
 {% for c in cards %}
+{% set b = c.best %}
 <div class="card {{ c.css }}">
-  <h3>{{ c.e.tags.album or c.e.name }}</h3>
+  <h3>{{ c.title }}</h3>
 
-  <div class="meta">
-    <span class="pill {{ c.css if c.css in ['alarm', 'warn', 'live', 'info'] else '' }}">{{ c.label }}</span>
-    {% if c.e.tags.albumartist %}<span>{{ c.e.tags.albumartist }}</span>{% endif %}
-    <span>{{ c.e.audio_files }} track{{ '' if c.e.audio_files == 1 else 's' }}</span>
-    <span>{{ human(c.e.bytes) }}</span>
-    {% if c.e.tags.disc %}<span>disc {{ c.e.tags.disc }}{% if c.e.tags.disctotal %} of {{ c.e.tags.disctotal }}{% endif %}</span>{% endif %}
-    {% if c.e.disc_id %}<span>ripped</span>{% endif %}
+  <div class="verdict">
+    {# What beets thought this was: its best candidate across both passes. #}
+    <dl class="found">
+      <dt>Artist</dt><dd>{{ val(b.artist if b else None) }}</dd>
+      <dt>Album</dt><dd>{{ val(b.album if b else None) }}</dd>
+      <dt>Year</dt><dd>{{ val(b.year if b else None) }}</dd>
+      <dt>Label</dt><dd>{{ val(b.label if b else None) }}</dd>
+      <dt>Tracks</dt>
+      <dd>{% if b %}{{ b.matched_tracks }} of {{ b.tracks }}
+        {%- if b.missing_tracks %} <span class="missing">{{ b.missing_tracks }} missing</span>{% endif %}
+        {%- if b.extra_items %} <span class="missing">{{ b.extra_items }} unmatched file{{ '' if b.extra_items == 1 else 's' }}</span>{% endif %}
+        {%- else %}{{ val(None) }}{% endif %}</dd>
+      {% if b and b.penalties %}
+      <dt>Lost on</dt><dd>{{ b.penalties|join(", ") }}</dd>
+      {% endif %}
+    </dl>
+
+    <div class="score {{ c.score_css }}">
+      {% if b %}
+      <span class="pct">{{ b.similarity|round|int }}%</span>
+      <span class="k">match via
+        {% if b.url %}<a href="{{ b.url }}" target="_blank" rel="noopener">{{ 'MusicBrainz' if b.source == 'musicbrainz' else 'Bandcamp' if b.source == 'bandcamp' else b.source }}</a>
+        {% else %}{{ b.source }}{% endif %}</span>
+      {% elif c.e.match %}
+      <span class="pct">—</span><span class="k">no candidates found</span>
+      {% else %}
+      <span class="pct">—</span><span class="k">no match recorded</span>
+      {% endif %}
+    </div>
   </div>
 
-  {% if c.e.notes %}
-  <ul class="notes">{% for n in c.e.notes %}<li>{{ n }}</li>{% endfor %}</ul>
-  {% endif %}
-
-  <div class="field">
-    <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
-           placeholder="MusicBrainz release ID, or a Bandcamp album URL"
-           autocapitalize="off" autocorrect="off" spellcheck="false">
-    <button class="primary" data-action="resolve"
-            data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Resolve</button>
-  </div>
-
+  {% if c.group %}
   <div class="actions">
-    {% if c.group %}
     <button class="primary" data-action="merge"
             data-entries='{{ c.group.members|tojson }}'
             data-album="{{ c.group.album or '' }}">Merge {{ c.group.members|length }} discs</button>
-    {% endif %}
-    <button data-action="retry" data-name="{{ c.e.name }}">Retry import</button>
+  </div>
+  {% endif %}
+
+  {# Retry with an ID restricts beets to that one release; blank, it goes back
+     through the normal two-pass import unchanged. One button, because to the
+     person holding the CD it is one action: "try again".
+     An ID does NOT force acceptance: in quiet mode beets still needs a strong
+     match (plan §13), so it fixes a wrong-release guess, not a near miss. #}
+  <div class="field">
+    <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
+           placeholder="MusicBrainz ID"
+           title="Points beets at this release. It still needs a 96% match to import — missing tracks will not pass."
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="primary" data-action="retry"
+            data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Retry</button>
     <button class="danger" data-action="drop" data-name="{{ c.e.name }}">Delete</button>
   </div>
 </div>

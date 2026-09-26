@@ -134,6 +134,36 @@ h2.section:first-child { margin-top: 4px; }
 }
 .card .why.bad { border-left-color: var(--alarm); }
 
+/* Quarantine: what beets found, beside how sure it was. */
+.verdict { display: flex; gap: 8px; margin-top: 10px; align-items: stretch; }
+.verdict .found {
+  flex: 1 1 auto; margin: 0; padding: 9px 11px;
+  background: var(--raised); border: 1px solid var(--line);
+  display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px;
+  font-size: 13px;
+}
+.verdict dt {
+  color: var(--ink-dim); font-size: 10.5px; font-weight: 800;
+  letter-spacing: 0.12em; text-transform: uppercase; padding-top: 2px;
+}
+.verdict dd { margin: 0; overflow-wrap: anywhere; }
+.missing { color: var(--alarm); font-weight: 700; }
+
+.verdict .score {
+  flex: 0 0 104px; padding: 9px 10px;
+  border: 1px solid var(--line); background: var(--raised);
+  display: flex; flex-direction: column; justify-content: center; text-align: center;
+}
+.score .pct { font-size: 30px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+.score .k {
+  margin-top: 6px; font-size: 10.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-dim);
+}
+.score.ok    .pct { color: var(--ok); }
+.score.warn  .pct { color: var(--warn); }
+.score.alarm .pct { color: var(--alarm); }
+.score.none  .pct { color: var(--ink-faint); }
+
 ul.notes { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--warn); }
 ul.notes li { margin: 2px 0; }
 
@@ -154,6 +184,23 @@ ul.notes li { margin: 2px 0; }
 .tile.alarm .n { color: var(--alarm); }
 .tile.warn  .n { color: var(--warn); }
 .tile.acid  .n { color: var(--acid); }
+
+/* Fetch: the + sits above the cards; the magnet field opens beside it. */
+.fetch-add { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; }
+.fetch-add .add-open { font-size: 22px; line-height: 1; padding: 0; width: 44px; min-height: 42px; }
+.fetch-add .field { flex: 1 1 auto; margin-top: 0; }
+.fetch-add .field[hidden] { display: none; }
+
+/* Inbox holding something: the whole tile turns, not just the number. */
+.tile { position: relative; }
+.tile.stuck { background: #1f1a0e; border-color: #5a4320; border-left: 3px solid var(--warn); }
+.tile.stuck .n { color: var(--warn); }
+.tile .nudge {
+  position: absolute; top: 8px; right: 8px;
+  min-height: 0; padding: 7px; line-height: 0;
+  background: transparent; color: var(--warn); border-color: #5a4320;
+}
+.tile .nudge:hover { background: #2a2410; }
 
 .bar { height: 6px; background: var(--raised); margin-top: 10px; }
 .bar > span { display: block; height: 100%; background: var(--acid); }

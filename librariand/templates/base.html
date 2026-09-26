@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0a0a">
 <title>{% block title %}librariand{% endblock %}</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 </head>
 <body>
 
@@ -22,10 +22,8 @@
     <a href="/"              class="{{ 'on' if nav == 'overview' }}">Overview</a>
     <a href="/ui/quarantine" class="{{ 'on' if nav == 'quarantine' }}">Quarantine
       <span class="count {{ 'zero' if not counts.quarantine }}">{{ counts.quarantine }}</span></a>
-    <a href="/ui/fetched"    class="{{ 'on' if nav == 'fetched' }}">Fetched
-      <span class="count {{ 'zero' if not counts.fetched }}">{{ counts.fetched }}</span></a>
-    <a href="/ui/inbox"      class="{{ 'on' if nav == 'inbox' }}">Inbox
-      <span class="count {{ 'zero' if not counts.inbox }}">{{ counts.inbox }}</span></a>
+    <a href="/ui/fetch"      class="{{ 'on' if nav == 'fetch' }}">Fetch
+      <span class="count {{ 'zero' if not counts.fetch }}">{{ counts.fetch }}</span></a>
     <a href="/ui/rips"       class="{{ 'on' if nav == 'rips' }}">Rips</a>
   </nav>
 </header>
@@ -37,6 +35,6 @@
 </main>
 
 <div id="flash" role="status" aria-live="polite"></div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_v }}"></script>
 </body>
 </html>

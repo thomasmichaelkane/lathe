@@ -51,7 +51,7 @@ match:
 # 'bandcamp' (beetcamp) is not optional for a download-based collection:
 # Bandcamp edits, bootlegs and unofficial remixes are largely absent from
 # MusicBrainz and can never match without it.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url quarantine_match
 
 # Local plugin dir. beets resolves pluginpath against the CWD, not the config
 # directory, so it must be absolute — the test overlay replaces this the same
@@ -93,6 +93,16 @@ replaygain:
 
 scrub:
   auto: yes
+
+# What beets thought of each album it skipped: best candidate, similarity and
+# penalties, per metadata source, one JSON per quarantine entry. librariand's
+# quarantine page reads it — without it the page can show file tags but not
+# how close beets came. See plugins/quarantine_match.py.
+quarantine_match:
+  dir: /srv/logs/matches
+  containers:
+    - /srv/inbox
+    - /srv/quarantine
 
 # Strip MusicBrainz ID fields that do not contain a MusicBrainz ID.
 #
