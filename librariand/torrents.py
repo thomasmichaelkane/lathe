@@ -326,22 +326,53 @@ def ready_count() -> int:
 
 # --- actions --------------------------------------------------------------
 
-def add(magnet: str) -> dict:
-    """Start downloading a magnet. Adding one already here returns that one."""
-    info_hash, name = parse_magnet(magnet)
+def parse_link(link: str) -> tuple[str, str | None]:
+    """(dedupe key, display name) for a magnet or a .torrent URL.
+
+    A .torrent URL is handed to aria2 as it is, never fetched here: that
+    request would leave from the Pi's own connection, outside the VPN, and
+    tell the site hosting the file your home IP. aria2 fetches it from inside
+    gluetun's network like everything else. The cost is that its info hash is
+    unknown until aria2 has it, so a URL is deduplicated on the URL itself.
+    """
+    link = (link or "").strip()
+    if link.startswith("magnet:"):
+        info_hash, name = parse_magnet(link)
+        return f"btih:{info_hash}", name
+    parsed = urllib.parse.urlsplit(link)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        base = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+        name = base[:-len(".torrent")] if base.lower().endswith(".torrent") else None
+        return f"url:{link}", name or None
+    raise TorrentError("paste a magnet link (magnet:?…) or a .torrent URL (https://…)")
+
+
+def _record_key(rec: dict) -> str | None:
+    # Records written before .torrent URLs were accepted carry only info_hash.
+    return rec.get("key") or (f"btih:{rec['info_hash']}" if rec.get("info_hash") else None)
+
+
+def _record_link(rec: dict) -> str:
+    return rec.get("link") or rec["magnet"]
+
+
+def add(link: str) -> dict:
+    """Start downloading a magnet or .torrent URL. Adding one already here
+    returns that one rather than starting a second copy."""
+    key, name = parse_link(link)
     TORRENTS.mkdir(parents=True, exist_ok=True)
     for d in TORRENTS.iterdir():
-        if d.is_dir() and _read_record(d).get("info_hash") == info_hash:
+        if d.is_dir() and _record_key(_read_record(d)) == key:
             return {"id": d.name, "detail": "already added"}
 
     tid = time.strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(3)
     d = TORRENTS / tid
     d.mkdir()
-    record = {"id": tid, "magnet": magnet.strip(), "info_hash": info_hash,
+    record = {"id": tid, "link": link.strip(), "key": key,
               "name": name, "added_at": time.time()}
     _write_record(d, record)
     try:
-        record["gid"] = _submit(d, record["magnet"])
+        record["gid"] = _submit(d, record["link"])
     except TorrentError:
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -349,11 +380,14 @@ def add(magnet: str) -> dict:
     return {"id": tid, "detail": "added"}
 
 
-def _submit(d: Path, magnet: str) -> str:
-    return _call("aria2.addUri", [magnet], {
+def _submit(d: Path, link: str) -> str:
+    return _call("aria2.addUri", [link], {
         "dir": str(d),
         "seed-time": "0",
         "bt-save-metadata": "false",
+        # For a .torrent URL: follow it from memory, so the .torrent file
+        # itself is never written into the payload and moved to the inbox.
+        "follow-torrent": "mem",
     })
 
 
@@ -372,7 +406,7 @@ def resume(tid: str) -> str:
         return "already downloading"
     for r in rows:
         _quietly("aria2.removeDownloadResult", r["gid"])
-    rec["gid"] = _submit(d, rec["magnet"])
+    rec["gid"] = _submit(d, _record_link(rec))
     _write_record(d, rec)
     return "resumed"
 

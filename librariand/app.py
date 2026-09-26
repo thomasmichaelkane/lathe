@@ -244,8 +244,8 @@ async def api_inbox():
     return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
-class MagnetBody(BaseModel):
-    magnet: str
+class LinkBody(BaseModel):
+    link: str
 
 
 @app.get("/torrents", dependencies=[Depends(require_api)])
@@ -257,9 +257,9 @@ def api_torrents():
 
 
 @app.post("/torrents", dependencies=[Depends(require_api)])
-def api_torrent_add(body: MagnetBody):
+def api_torrent_add(body: LinkBody):
     try:
-        return {"ok": True, **torrents.add(body.magnet)}
+        return {"ok": True, **torrents.add(body.link)}
     except torrents.TorrentError as exc:
         return _fail(exc)
 

@@ -244,7 +244,8 @@ class FakeAria2:
         self.rows[gid] = {"gid": gid, "status": "active", "dir": opts["dir"],
                           "totalLength": "0", "completedLength": "0",
                           "downloadSpeed": "0", "connections": "2",
-                          "magnet": uris[0], "seed": opts.get("seed-time")}
+                          "magnet": uris[0], "seed": opts.get("seed-time"),
+                          "follow": opts.get("follow-torrent")}
         return gid
 
     def _tell(self, statuses):
@@ -402,18 +403,21 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
 
     section("fetch — adding")
     check("junk is refused", client.post("/torrents", headers=auth,
-          json={"magnet": "https://example.com/x.torrent"}).status_code, 400)
+          json={"link": "not a link"}).status_code, 400)
+    check("as is a non-web URL", client.post("/torrents", headers=auth,
+          json={"link": "ftp://example.com/x.torrent"}).status_code, 400)
     check("a magnet with no info hash is refused", client.post(
-          "/torrents", headers=auth, json={"magnet": "magnet:?dn=x"}).status_code, 400)
-    r = client.post("/torrents", headers=auth, json={"magnet": MAGNET}).json()
+          "/torrents", headers=auth, json={"link": "magnet:?dn=x"}).status_code, 400)
+    r = client.post("/torrents", headers=auth, json={"link": MAGNET}).json()
     truthy("a magnet is accepted", r["ok"])
     tid = r["id"]
     row = next(iter(aria2.rows.values()))
     check("into its own directory", row["dir"], str(torrents_dir / tid))
     check("with seeding off", row["seed"], "0")
-    r = client.post("/torrents", headers=auth, json={"magnet": MAGNET}).json()
+    r = client.post("/torrents", headers=auth, json={"link": MAGNET}).json()
     check("adding the same magnet again returns the same download", r["id"], tid)
     check("without a second aria2 job", len(aria2.rows), 1)
+    check("following a .torrent from memory, never onto disk", row["follow"], "mem")
 
     section("fetch — progress")
     l = listed()
@@ -458,8 +462,27 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
     r = client.post(f"/torrents/{tid}/move", headers=auth).json()
     truthy("pressing it again is harmless", r["ok"] and "already" in r["detail"])
 
+    section("fetch — .torrent links")
+    url = "https://archive.org/download/some-album/Some%20Album_archive.torrent"
+    r = client.post("/torrents", headers=auth, json={"link": url}).json()
+    truthy("a .torrent URL is accepted", r["ok"])
+    turl = r["id"]
+    row = next(r for r in aria2.rows.values() if r["dir"].endswith(turl))
+    check("and handed to aria2 as-is, not fetched here", row["magnet"], url)
+    t = listed()["torrents"][0]
+    check("named from the file meanwhile", t["name"], "Some Album_archive")
+    check("waiting on the .torrent like a magnet's metadata", t["state"], "metadata")
+    r = client.post("/torrents", headers=auth, json={"link": url}).json()
+    check("the same URL twice is one download", r["id"], turl)
+    aria2.tick()
+    t = listed()["torrents"][0]
+    check("then downloads as the torrent it named", (t["state"], t["name"]),
+          ("downloading", "Tick Album"))
+    client.delete(f"/torrents/{turl}", headers=auth)
+    check("and cancels like any other", listed()["torrents"], [])
+
     section("fetch — failure, resume, cancel")
-    tid2 = client.post("/torrents", headers=auth, json={"magnet": MAGNET2}).json()["id"]
+    tid2 = client.post("/torrents", headers=auth, json={"link": MAGNET2}).json()["id"]
     aria2.fail()
     t = listed()["torrents"][0]
     check("a failed download says so", t["state"], "error")
@@ -488,7 +511,7 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
     torrents_mod.ARIA2_RPC = "http://127.0.0.1:9/jsonrpc"
     try:
         check("the list says aria2 is down", listed()["aria2"], False)
-        r = client.post("/torrents", headers=auth, json={"magnet": MAGNET})
+        r = client.post("/torrents", headers=auth, json={"link": MAGNET})
         check("adding fails", r.status_code, 400)
         truthy("saying where it looked", "127.0.0.1:9" in r.json()["detail"])
         truthy("and leaves no directory behind", not any(torrents_dir.iterdir()))
