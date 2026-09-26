@@ -1,0 +1,21 @@
+# beets and its plugins, pinned.
+#
+# Installed by install.sh into a venv at /usr/local/lib/beets, with
+# /usr/local/bin/beet pointing into it — on the default PATH, so the importer
+# (which runs as `music`) and librariand can both find it. The venv is
+# reinstalled whenever this file changes, so a beets upgrade is a release like
+# any other: bump the pin, tag, deploy.
+#
+# Not a per-user `uv tool install`. That puts beet in one user's ~/.local/bin,
+# which the `music` user cannot see on its PATH and, on Debian, cannot enter
+# at all: home directories are private by default.
+
+# 2.x, never the distro's 1.6.0 — that writes RELEASETYPE=a;l;b;u;m into every
+# file. fetchart pulls requests; lastgenre pulls pylast. replaygain needs no
+# extra, because config.yaml uses the ffmpeg backend — but it does need the
+# ffmpeg BINARY, which is an apt package (see the runbook).
+beets[fetchart,lastgenre]==2.13.1
+
+# The `bandcamp` metadata source. Not optional for a download-based collection:
+# Bandcamp edits and bootlegs are largely absent from MusicBrainz.
+beetcamp==0.24.3

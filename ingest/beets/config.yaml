@@ -8,6 +8,14 @@
 directory: /srv/music
 library: /srv/config/beets/library.db
 
+# Pinned, not left to the default. beets puts state.pickle in its config
+# DIRECTORY — $BEETSDIR, else ~/.config/beets — not beside the file passed with
+# -c. The importer runs as `music`, whose home is /srv, with no BEETSDIR, so the
+# default would be /srv/.config/beets/state.pickle: a hidden directory nobody is
+# looking in, holding the one file that decides what `incremental` skips.
+# install.sh, the plan and librariand all say it lives here; now it does.
+statefile: /srv/config/beets/state.pickle
+
 import:
   move: yes
   quiet: yes

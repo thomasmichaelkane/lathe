@@ -213,7 +213,7 @@ there is no good reason to leave it on for a server.
 ## 9. Clone and deploy
 
 ```sh
-sudo apt install -y git python3-venv
+sudo apt install -y git python3-venv ffmpeg
 git clone https://github.com/thomasmichaelkane/lathe.git ~/lathe
 cd ~/lathe
 git checkout 0.1.0                     # a release, not main — see "Upgrading" below
@@ -222,10 +222,24 @@ sudo ./install.sh --dry-run            # read this before running it for real
 sudo ./install.sh
 
 cat /etc/lathe-release                 # VERSION=0.1.0
+sudo -u music beets-check.sh           # beets 2.13.1: all 11 plugins loaded
 ```
 
-`python3-venv` is for librariand's dependencies, which `install.sh` installs
-into a venv — the one step that needs the network.
+**Do not install beets yourself** — not from apt, not with `uv tool install`.
+`install.sh` installs it, pinned, into `/usr/local/lib/beets` with `beet` on
+the default PATH, so the importer (which runs as `music`) and librariand both
+find the same one. A per-user install lands in your home directory, which the
+`music` user can neither see on its PATH nor, on Debian, enter at all.
+
+- `python3-venv` is for the two venvs `install.sh` builds, beets and
+  librariand — the only steps that need the network.
+- `ffmpeg` is for beets' ReplayGain, which runs on **every** import, not just
+  rips. Without it the replaygain plugin silently fails to load.
+
+`install.sh` finishes by running `beets-check.sh` as `music`, and exits non-zero
+if any plugin the config asks for did not load. That check exists because beets
+itself does not fail: it drops the plugin, prints a traceback, and imports
+anyway with exit status 0.
 
 **This also builds the `/srv` tree** — the §4 directories, owned by `music`,
 with setgid on `inbox/` and `staging/incoming/`. It is idempotent, so re-running
