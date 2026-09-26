@@ -161,6 +161,29 @@ def build_srv(srv: Path) -> None:
     riplog("discid4", "ok", "/srv/inbox/Waiting Album", "Waiting Album")
     riplog("discid5", "ok", "/srv/inbox/Scratchy", "Scratchy", errors=True)
 
+    # --- match records, as the quarantine_match beets plugin writes them.
+    # Both passes judged the rip; MusicBrainz came closer. The Bandcamp file
+    # was tried and found nothing anywhere. The Wall has no record at all —
+    # quarantined before the plugin existed.
+    matches = srv / "logs" / "matches"
+    matches.mkdir(parents=True, exist_ok=True)
+    slot = {"at": "2026-09-26T18:00:00+0100", "candidates": 3,
+            "recommendation": "low", "artist": "Someone",
+            "album": "Some Ripped Album", "year": 2019, "label": None,
+            "id": "cc531207-6efd-4e7d-a9cf-3a196aea64bf",
+            "url": "https://musicbrainz.org/release/cc531207-6efd-4e7d-a9cf-3a196aea64bf",
+            "tracks": 3, "matched_tracks": 2, "extra_items": 0,
+            "missing_tracks": 1, "penalties": ["missing tracks"]}
+    (matches / "Some Ripped Album.json").write_text(json.dumps({"sources": {
+        "musicbrainz": {**slot, "similarity": 91.3},
+        "bandcamp": {**slot, "similarity": 62.0,
+                     "url": "https://someone.bandcamp.com/album/x"},
+    }}), encoding="utf-8")
+    none = {"at": "2026-09-26T18:00:00+0100", "candidates": 0,
+            "recommendation": "none"}
+    (matches / "Thornley - Easy.flac.json").write_text(json.dumps(
+        {"sources": {"musicbrainz": none, "bandcamp": none}}), encoding="utf-8")
+
 
 # --------------------------------------------------------------------- main
 
@@ -190,6 +213,7 @@ def main() -> int:
         "INBOX": str(srv / "inbox"),
         "FETCHED": str(srv / "staging" / "fetched"),
         "RIP_LOGS": str(srv / "logs" / "rips"),
+        "MATCHES": str(srv / "logs" / "matches"),
         "RIPS": str(srv / "staging" / "rips"),
         "MUSIC": str(srv / "music"),
         "BEETS_CONFIG": str(srv / "config" / "beets" / "config.yaml"),
@@ -264,6 +288,30 @@ def run_checks(client, auth, srv: Path):
     check("reads disc numbers", disc1["tags"]["disc"], 1)
     truthy("explains why each entry is stuck", any(e["notes"] for e in q))
 
+    ripped = next(e for e in q if e["name"] == "Some Ripped Album")
+    check("carries beets' best candidate", ripped["match"]["best"]["source"], "musicbrainz")
+    check("the closer of the two passes", ripped["match"]["best"]["similarity"], 91.3)
+    loose = next(e for e in q if e["name"] == "Thornley - Easy.flac")
+    truthy("a record with no candidates is still a record", loose["match"] is not None)
+    check("but has no best candidate", loose["match"]["best"], None)
+    check("an entry with no record has no match", disc1["match"], None)
+
+    import quarantine as quarantine_mod
+    (srv / "logs" / "matches" / "Renamed.json").write_text(
+        json.dumps({"sources": {"musicbrainz": {"similarity": 50.0}}}))
+    truthy("a collision-suffixed entry finds its record",
+           quarantine_mod.read_match("Renamed.20260926120000") is not None)
+
+    page = client.get("/ui/quarantine", headers=auth).text
+    truthy("a card is titled by its album tag", "<h3>Some Ripped Album</h3>" in page)
+    truthy("and an untagged one by a stand-in", "<h3>Import " in page)
+    truthy("the similarity is shown", "91%" in page)
+    truthy("coloured by beets' thresholds", 'class="score warn"' in page)
+    truthy("the missing label is marked missing", 'class="missing">missing<' in page)
+    truthy("and missing tracks are called out", "1 missing" in page)
+    truthy("a record with no candidates says so", "no candidates found" in page)
+    truthy("an entry with no record says so", "no match recorded" in page)
+
     g = client.get("/quarantine/groups", headers=auth).json()["groups"]
     check("groups the two discs into one release", len(g), 1)
     check("with both members", len(g[0]["members"]), 2)
@@ -283,6 +331,8 @@ def run_checks(client, auth, srv: Path):
     r = client.delete("/quarantine/Some Ripped Album", headers=auth).json()
     truthy("delete removes an entry", r["ok"])
     check("from disk", (srv / "quarantine" / "Some Ripped Album").exists(), False)
+    check("along with its match record",
+          (srv / "logs" / "matches" / "Some Ripped Album.json").exists(), False)
 
     r = client.post("/quarantine/..%2F..%2Fetc/retry", headers=auth)
     truthy("a path-traversal name is refused", r.status_code >= 400 or
@@ -407,7 +457,9 @@ def run_checks(client, auth, srv: Path):
         truthy(f"{path} contains its content", needle.lower() in resp.text.lower())
 
     resp = client.get("/ui/quarantine", headers=auth)
-    truthy("quarantine page offers a resolve field", 'data-action="resolve"' in resp.text)
+    truthy("quarantine page offers an ID field", "data-resolve-for" in resp.text)
+    truthy("beside a single retry button", 'data-action="retry"' in resp.text
+           and 'data-action="resolve"' not in resp.text)
     truthy("and the nav carries live counts", 'class="count' in resp.text)
     # One flat list: no group section heading, and the merge action rides on
     # the member cards instead.

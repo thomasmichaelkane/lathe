@@ -62,9 +62,19 @@ document.addEventListener("click", (ev) => {
   const name = encodeURIComponent(a.name || "");
 
   switch (a.action) {
-    case "retry":
+    /* One button, two endpoints. With an identifier it re-imports against
+     * exactly that release (/resolve); blank, it hands the entry back to the
+     * inbox for the normal two-pass import (/retry). */
+    case "retry": {
+      const input = document.getElementById(`id-${a.idx}`);
+      const identifier = ((input && input.value) || "").trim();
+      if (identifier) {
+        return act(btn, "POST", `/quarantine/${name}/resolve`, { identifier },
+                   "re-imported");
+      }
       return act(btn, "POST", `/quarantine/${name}/retry`, undefined,
                  "moved back to the inbox");
+    }
 
     case "drop":
       if (!confirm(`Delete "${a.name}" permanently?\n\nThe files are removed from disk. This cannot be undone.`)) return;
@@ -77,17 +87,6 @@ document.addEventListener("click", (ev) => {
                  "merged and handed back to the inbox");
     }
 
-    case "resolve": {
-      const input = document.getElementById(`id-${a.idx}`);
-      const identifier = (input.value || "").trim();
-      if (!identifier) {
-        input.focus();
-        return flash("paste a MusicBrainz release ID or a Bandcamp album URL", true);
-      }
-      return act(btn, "POST", `/quarantine/${name}/resolve`, { identifier },
-                 "re-imported");
-    }
-
     case "approve":
       return act(btn, "POST", `/fetched/${name}/approve`, undefined,
                  "approved — the inbox will import it");
@@ -98,13 +97,13 @@ document.addEventListener("click", (ev) => {
   }
 });
 
-/* Enter in a resolve field is the same as pressing the button next to it. */
+/* Enter in an ID field is the same as pressing Retry next to it. */
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter") return;
   const input = ev.target.closest("input[data-resolve-for]");
   if (!input) return;
   ev.preventDefault();
   document.querySelector(
-    `[data-action="resolve"][data-idx="${input.dataset.resolveFor}"]`
+    `[data-action="retry"][data-idx="${input.dataset.resolveFor}"]`
   )?.click();
 });

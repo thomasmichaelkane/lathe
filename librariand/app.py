@@ -24,6 +24,7 @@ means `install.sh` deploys it like everything else, with no image to rebuild.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 from dataclasses import asdict
@@ -301,6 +302,29 @@ def _issue(entry) -> tuple[str, str, int]:
     return "info", "no match", 4
 
 
+def _card_title(entry) -> str:
+    """The album tag, or a stable stand-in when the files have none.
+
+    Hashed from the entry name rather than random so a card keeps its title
+    across reloads — it is how you find the same card again.
+    """
+    if entry.tags.album:
+        return entry.tags.album
+    return "Import " + hashlib.sha1(entry.name.encode()).hexdigest()[:6]
+
+
+def _score_css(best: dict | None) -> str:
+    """Colour a similarity by where it sits against beets' own thresholds.
+
+    96% is strong_rec_thresh (0.04) — what beets would have auto-accepted had
+    nothing else capped it; 75% is beets' default medium_rec_thresh (0.25).
+    """
+    if not best:
+        return "none"
+    s = best["similarity"]
+    return "ok" if s >= 96 else "warn" if s >= 75 else "alarm"
+
+
 @app.get("/ui/quarantine", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
 async def ui_quarantine(request: Request):
@@ -316,8 +340,12 @@ async def ui_quarantine(request: Request):
     cards = []
     for e in quarantine.entries():
         css, label, rank = _issue(e)
+        best = (e.match or {}).get("best")
         cards.append({"e": e, "css": css, "label": label, "rank": rank,
-                      "group": group_of.get(e.name)})
+                      "group": group_of.get(e.name),
+                      "title": _card_title(e),
+                      "best": best,
+                      "score_css": _score_css(best)})
     cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
 
     return _page(request, "quarantine.html", cards=cards, nav="quarantine")
