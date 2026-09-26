@@ -59,6 +59,15 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 
+# Appended to /static URLs as ?v=. StaticFiles sends no Cache-Control, so a
+# browser heuristically reuses the old stylesheet after an upgrade and renders
+# new markup with old CSS. Hashing the contents changes the URL exactly when
+# the files change.
+_static = hashlib.sha1()
+for _f in sorted((HERE / "static").iterdir()):
+    _static.update(_f.read_bytes())
+templates.env.globals["asset_v"] = _static.hexdigest()[:10]
+
 
 # --------------------------------------------------------------------- auth
 

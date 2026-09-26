@@ -18,7 +18,6 @@
 {% set b = c.best %}
 <div class="card {{ c.css }}">
   <h3>{{ c.title }}</h3>
-  <div class="entry mono">{{ c.e.name }}</div>
 
   <div class="verdict">
     {# What beets thought this was: its best candidate across both passes. #}
@@ -51,10 +50,6 @@
     </div>
   </div>
 
-  {% if c.e.notes %}
-  <ul class="notes">{% for n in c.e.notes %}<li>{{ n }}</li>{% endfor %}</ul>
-  {% endif %}
-
   {% if c.group %}
   <div class="actions">
     <button class="primary" data-action="merge"
@@ -68,7 +63,7 @@
      holding the CD it is one action: "try again". #}
   <div class="field">
     <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
-           placeholder="MusicBrainz ID or Bandcamp URL (optional)"
+           placeholder="MBID or Bandcamp URL (optional)"
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="primary" data-action="retry"
             data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Retry</button>
