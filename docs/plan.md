@@ -28,7 +28,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Server | **Navidrome** | Go, tiny, Subsonic + OpenSubsonic API, huge client ecosystem, excellent on ARM |
 | Host | **Raspberry Pi 5, 4GB** | 8GB is ~2x the price in the 2026 memory shortage and unnecessary for this workload |
 | OS | **Raspberry Pi OS Lite, 64-bit** | Headless, minimal, Debian-based, best Pi hardware support |
-| Boot device | **NVMe SSD via M.2 HAT** | SD cards die under sustained SQLite writes. This is the #1 preventable failure. |
+| Boot device | **microSD** (NVMe optional) | Originally NVMe, because SD cards die under sustained SQLite writes. Mounting the library drive at `/srv` (§4) moved every database off the card, so that reason no longer applies — see below. |
 | Library storage | **4TB self-powered USB 3 desktop HDD** | ~8,000 albums in FLAC. Cheap tier during shortage. Never bus-powered. |
 | Deployment | **Docker Compose** | Reproducible, portable to a real NAS later |
 | Rip pipeline | **On the host, not in Docker** | udev + device access in containers is more pain than it's worth |
@@ -1509,7 +1509,7 @@ Backblaze account, restic repo, back up a small folder, **and do a restore test*
 
 **Done when:** the Pi arrives and Phase 0–1 is a single evening — plug in, `sudo ./install.sh`, `docker compose up`, push the collection in with `push-music.sh` and let beets file it.
 
-**Blocked until hardware:** NVMe boot, and anything that actually touches
+**Blocked until hardware:** anything that actually touches
 `/dev/sr0` — abcde's real output layout, the MusicBrainz disc-ID lookup, the
 read-error patterns, eject, and the udev rule firing on media insertion.
 
@@ -1538,7 +1538,30 @@ that has not happened yet. Deliberately not duplicated here — see §5 for what
 happens when one thing is written down twice.
 
 - Flash Pi OS Lite 64-bit to microSD, boot, update
-- Move root filesystem to NVMe, verify boot from NVMe, retire the SD card
+- ~~Move root filesystem to NVMe~~ — **optional, and not planned.** Settled
+  2026-09-26: the machine boots from the SD card and stays there.
+
+  The NVMe was bought because SD cards die under sustained SQLite writes. Once
+  the library drive was mounted at `/srv` as a whole (§4), every database —
+  Navidrome's, beets' `library.db` and `state.pickle` — and every lathe log
+  moved onto it, so the writes the NVMe existed to absorb stopped hitting the
+  card. What is left on the SD card is all reproducible: the OS, what
+  `install.sh` deploys, the librariand venv, Docker's images, and
+  `/etc/default/lathe`. Losing the card costs an evening with
+  `docs/phase0-runbook.md`, not the library or its history.
+
+  It also avoids the riskiest boot change in the plan. Moving root means
+  editing the EEPROM boot order and cloning a live filesystem, and enabling the
+  NVMe at all needs a PCIe setting in `config.txt` — the drive is not even
+  detected as `nvme0n1` without it. Each is a change that can leave the Pi
+  unbootable, for a benefit the `/srv` mount already delivered.
+
+  The two writers still on the card are capped: Docker's container logs, whose
+  default `json-file` driver never rotates (compose sets `max-size`), and the
+  systemd journal, whose default allowance is 10% of the filesystem
+  (`systemd/journald.conf.d/lathe.conf`, deployed by `install.sh`).
+
+  If you want insurance, an endurance-rated card is the cheap version of it.
 - Create `music` user (**uid and gid 1948** — §4 explains why not 1001), and mount the library drive **at `/srv`** by UUID in `/etc/fstab` (§4). The `/srv` tree itself is created by `install.sh` below, not by hand.
 - **Add your own user to the `music` group** (`sudo usermod -aG music tom`, then log out and back in). Uploads arrive owned by you but must be movable and deletable by beets, which runs as `music`. The matching setgid bits on `/srv/inbox` and `/srv/staging/incoming` are applied by `install.sh`; the group membership is not, because which groups a human account belongs to is not a deploy script's business. Skipping it makes every upload fail on permissions at import time rather than at copy time, which is a confusing place to find out.
 - Install Docker + Compose, Tailscale

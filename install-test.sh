@@ -113,6 +113,7 @@ has "deploys both scripts"      "/usr/local/bin/inbox-import.sh"          "$OUT"
 has "deploys abcde.conf"        "/etc/abcde.conf"                         "$OUT"
 has "deploys the beets config"  "$SRV/config/beets/config.yaml"           "$OUT"
 has "deploys the udev rule"     "/etc/udev/rules.d/99-autorip.rules"      "$OUT"
+has "deploys the journald cap"  "/etc/systemd/journald.conf.d/lathe.conf" "$OUT"
 has "deploys the path unit"     "/etc/systemd/system/inbox.path"          "$OUT"
 has "creates the env file"      "/etc/default/lathe"                      "$OUT"
 
@@ -182,6 +183,23 @@ done < <(sed -n 's/^  WOULD \(CREATE\|UPDATE\)  \([^ ]*\).*/\2/p' "$TMP/install-
 
 [ "$checked" -ge 8 ] || bad "only $checked deploy targets seen — the parse above is wrong"
 [ "$drifted" -eq 0 ] && ok "every deployed file is covered by --uninstall ($checked targets)"
+
+# And the other direction, which the check above cannot see. uninstall derives
+# its list by globbing the repo; if the deploy side is ever a hand-written list
+# again, a new file is known to uninstall but never shipped. That is not
+# hypothetical: install.sh listed six librariand modules by hand, inbox.py was
+# added later, and librariand would have died on `import inbox` on first start.
+missing=0
+seen=0
+while read -r path; do
+  [ -n "$path" ] || continue
+  seen=$((seen + 1))
+  grep -qF -- "$path" "$TMP/install-plan.txt" \
+    || { bad "uninstall knows about it but install never ships it: $path"; missing=1; }
+done < <(sed -n 's#^ *\(WOULD REMOVE\|removed\|absent\) *\(/[^ ]*[^/ ]\)\( .*\)\?$#\2#p' "$TMP/uninstall-plan.txt")
+
+[ "$seen" -ge 8 ] || bad "only $seen uninstall targets seen — the parse above is wrong"
+[ "$missing" -eq 0 ] && ok "every file uninstall removes is one install ships ($seen targets)"
 
 echo
 echo "-----------------------------------------"
