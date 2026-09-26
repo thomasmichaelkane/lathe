@@ -36,6 +36,9 @@ LOG="${LOG:-/srv/logs/inbox-import.log}"
 SETTLE_SECONDS="${SETTLE_SECONDS:-120}"
 # Give up waiting eventually rather than blocking the unit forever.
 SETTLE_TIMEOUT="${SETTLE_TIMEOUT:-7200}"
+# How often to look again while waiting. Overridable so the test harness does
+# not sit through fifteen-second sleeps.
+SETTLE_POLL="${SETTLE_POLL:-15}"
 
 # Notification settings. All optional, all empty by default, and all supplied
 # by /etc/default/lathe via the unit's EnvironmentFile — never from the repo,
@@ -141,14 +144,38 @@ while :; do
     log "inbox-import: still changing after ${SETTLE_TIMEOUT}s, importing anyway"
     break
   fi
-  sleep 15
-  waited=$((waited + 15))
+  sleep "$SETTLE_POLL"
+  waited=$((waited + SETTLE_POLL))
 done
 
-# Counted with the same predicate as the quarantine sweep below (directories
-# AND loose files), so that `imported = before - moved` is exact rather than
-# approximately right — Bandcamp single-track downloads arrive as a bare .flac.
-before="$(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) | wc -l)"
+# The same extensions quarantine.py counts as audio. Used only to tell "beets
+# took the music and left the clutter" apart from "there was never any music".
+has_audio() {
+  [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.mp3' -o -iname '*.m4a' \
+      -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.wav' -o -iname '*.wv' \
+      -o -iname '*.ape' \) -print -quit)" ]
+}
+
+# SNAPSHOT what this run is responsible for, and touch nothing else.
+#
+# This used to import "$INBOX" and then sweep whatever was left in it. Anything
+# that arrived while beets was running — a rip finishing during an hours-long
+# bulk import, an approved fetch — was never offered to beets at all, yet the
+# sweep moved it to quarantine as though it had failed to match. And the path
+# unit would not fire again for it, because PathChanged does not re-check once
+# the service finishes. So: list the inbox once, import exactly that list, sweep
+# exactly that list, and go round again at the end if anything new turned up.
+#
+# Counted with the same predicate as the sweep (directories AND loose files),
+# so that `imported = before - moved` is exact — Bandcamp single-track
+# downloads arrive as a bare .flac.
+ITEMS=()
+HAD_AUDIO=()
+while IFS= read -r -d '' item; do
+  ITEMS+=("$item")
+  if has_audio "$item"; then HAD_AUDIO+=(1); else HAD_AUDIO+=(0); fi
+done < <(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 | sort -z)
+before="${#ITEMS[@]}"
 log "inbox-import: importing $before items"
 
 # Import twice, one metadata source per pass, MusicBrainz first.
@@ -175,8 +202,18 @@ log "inbox-import: importing $before items"
 # let a single bad album abort the run — check the exit code instead.
 import_pass() {
   local label="$1" disable="$2"
+  # Only the snapshot, and only what the previous pass left behind.
+  local present=() item
+  for item in "${ITEMS[@]}"; do
+    [ -e "$item" ] && present+=("$item")
+  done
+  : >"$PASS_OUT"
+  if [ "${#present[@]}" -eq 0 ]; then
+    log "inbox-import: pass — $label: nothing left to try"
+    return 0
+  fi
   log "inbox-import: pass — $label"
-  if beet -c "$BEETS_CONFIG" -P "$disable" import "$INBOX" >"$PASS_OUT" 2>&1; then
+  if beet -c "$BEETS_CONFIG" -P "$disable" import "${present[@]}" >"$PASS_OUT" 2>&1; then
     log "inbox-import: $label finished cleanly"
   else
     log "inbox-import: $label exited non-zero — see $LOG"
@@ -212,17 +249,41 @@ fi
 
 import_pass "Bandcamp" musicbrainz
 
-# Whatever beets declined to match is still sitting here. Move it aside so the
-# next trigger doesn't retry it indefinitely, and so it shows up for review.
+# Sweep the snapshot. Each item is in one of three states now:
+#
+#   gone              beets moved everything out and pruned the folder.
+#   had audio, now    beets imported the music and left the clutter — a .cue,
+#   has none          an EAC .log, an .m3u, Front.jpg, the fetch.json an
+#                     approved fetch carries. beets' `clutter` setting only
+#                     knows Thumbs.DB and .DS_Store. This used to be swept into
+#                     quarantine, which reported a perfect import as a failure
+#                     and filled the review pile with folders of junk. It is
+#                     deleted instead, and counts as imported, because it was.
+#   still has audio   beets declined it. Quarantine, for review.
+#
+# An item that had no audio to begin with (a folder of .rar files, a stray
+# text file) is quarantined, not deleted: nothing here imported it, and the
+# quarantine page says "no audio files", which is the truth.
+#
 # Loose FILES count, not just directories. Bandcamp hands you a bare .flac for
 # a single-track release — no folder, and no ALBUM tag either, so it is exactly
-# the kind of thing that never matches. Sweeping only directories left those
-# sitting in the inbox to be retried on every trigger forever, which
-# `incremental_skip_later: yes` now guarantees rather than merely risks.
+# the kind of thing that never matches.
 moved=0
+cleared=0
 quarantined=()
-while IFS= read -r -d '' leftover; do
+for idx in "${!ITEMS[@]}"; do
+  leftover="${ITEMS[$idx]}"
+  [ -e "$leftover" ] || continue
   name="$(basename "$leftover")"
+
+  if [ "${HAD_AUDIO[$idx]}" = 1 ] && ! has_audio "$leftover"; then
+    log "inbox-import: $name imported; deleting what beets left behind:"
+    find "$leftover" -type f -printf '  %P\n' | tee -a "$LOG"
+    rm -rf -- "$leftover"
+    cleared=$((cleared + 1))
+    continue
+  fi
+
   quarantined+=("$name")
   dest="$QUARANTINE/$name"
   # Never clobber an existing quarantine entry from an earlier run.
@@ -231,12 +292,9 @@ while IFS= read -r -d '' leftover; do
   fi
   mv -- "$leftover" "$dest"
   moved=$((moved + 1))
-done < <(find "$INBOX" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 | sort -z)
+done
 
-# Anything left is an empty directory beets emptied as it moved files out.
-find "$INBOX" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-
-log "inbox-import: done — $moved unmatched moved to quarantine"
+log "inbox-import: done — $moved unmatched moved to quarantine, $cleared cleared of leftovers"
 
 # ---------------------------------------------------------------- report (§6.4)
 
@@ -272,3 +330,14 @@ fi
 # That is the better default, but it does mean ntfy is not a reliable "*this*
 # disc is done" signal. The eject is (§6.4).
 notify "Library updated" default "$summary"
+
+# Anything in the inbox now arrived after the snapshot, so this run never
+# offered it to beets. Go round again rather than leave it for a trigger that
+# will not come. Every snapshot item is gone by this point — imported, cleared
+# or quarantined — so this cannot spin on the same thing. exec skips the EXIT
+# trap, hence the explicit cleanup.
+if [ -n "$(find "$INBOX" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+  log "inbox-import: more arrived during this run — starting again"
+  rm -f "$REF" "$PASS_OUT"
+  exec bash "$0"
+fi
