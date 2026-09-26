@@ -58,12 +58,15 @@
   </div>
   {% endif %}
 
-  {# Retry with an ID forces that release; blank, it goes back through the
-     normal two-pass import unchanged. One button, because to the person
-     holding the CD it is one action: "try again". #}
+  {# Retry with an ID restricts beets to that one release; blank, it goes back
+     through the normal two-pass import unchanged. One button, because to the
+     person holding the CD it is one action: "try again".
+     An ID does NOT force acceptance: in quiet mode beets still needs a strong
+     match (plan §13), so it fixes a wrong-release guess, not a near miss. #}
   <div class="field">
     <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
            placeholder="MusicBrainz ID"
+           title="Points beets at this release. It still needs a 96% match to import — missing tracks will not pass."
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="primary" data-action="retry"
             data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Retry</button>
