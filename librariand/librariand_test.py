@@ -737,6 +737,45 @@ def run_checks(client, auth, srv: Path):
     truthy("a dry-run merge reports a plan", r["ok"])
     check("and moves nothing", len(list((srv / "quarantine").iterdir())), 4)
 
+    section("the action log (#31)")
+    import logging
+
+    class Catch(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+
+        def emit(self, record):
+            self.lines.append((record.levelname, record.getMessage()))
+
+    catch = Catch()
+    logger = logging.getLogger("librariand")
+    logger.addHandler(catch)
+    logger.setLevel(logging.INFO)
+    try:
+        client.post("/quarantine/The Wall (Disc 1)/retry?dry_run=true", headers=auth)
+        client.post("/quarantine/%2E%2E/retry", headers=auth)
+        client.post("/torrents", headers=auth, json={"link": "not a link"})
+        client.post("/login", data={"token": "wrong-token-xyz"})
+        client.get("/ui/quarantine", headers=auth)
+        client.get("/quarantine", headers=auth)
+    finally:
+        logger.removeHandler(catch)
+    lines = [f"{lvl} {msg}" for lvl, msg in catch.lines]
+    truthy("an action is logged with its target and result",
+           any(l.startswith("INFO retry (dry run) The Wall (Disc 1): would move")
+               for l in lines))
+    truthy("a refused one says refused, and why",
+           any(l.startswith("WARNING retry ..: refused — ") for l in lines))
+    truthy("including a refused torrent link",
+           any(l.startswith("WARNING torrent add not a link: refused") for l in lines))
+    truthy("a failed login is logged",
+           any("login from" in l and "refused" in l for l in lines))
+    truthy("without the token that was tried",
+           not any("wrong-token-xyz" in l for l in lines))
+    check("and reading the dashboard logs nothing — four actions, four lines",
+          len(lines), 4)
+
     section("quarantine — actions")
     r = client.post("/quarantine/Thornley - Easy.flac/retry", headers=auth).json()
     truthy("retry hands an entry back to the inbox", r["ok"])
