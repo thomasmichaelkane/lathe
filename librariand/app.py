@@ -378,6 +378,33 @@ _ISSUES = [
 ]
 
 
+def _fit(entry, best: dict | None) -> dict | None:
+    """How the folder's files lined up with beets' best candidate.
+
+    Framed from the FILES' side, because that is what decides whether the
+    candidate was the right release. "28 of 28" (the candidate's tracks that
+    found a file) read as a strong match on a 70-file box set that beets had
+    correctly refused — the 42 files the release had no place for trailed
+    behind it in the same size (#38).
+    """
+    if not best or best.get("tracks") is None:
+        return None
+    extra = best.get("extra_items") or 0
+    fit = best.get("matched_tracks") or 0
+    files = entry.audio_files or fit + extra
+    return {
+        "files": files,
+        "fit": fit,
+        "release": best.get("tracks") or 0,
+        "missing": best.get("missing_tracks") or 0,
+        "extra": extra,
+        # More than a quarter of the folder has no place on this release: a
+        # bigger edition, bonus discs, or two copies side by side. Retrying
+        # cannot help; the fix is the right release ID, or a split.
+        "oversized": files > 0 and extra * 4 > files,
+    }
+
+
 def _issue(entry) -> tuple[str, str, int]:
     notes = " ".join(entry.notes).lower()
     for needle, css, label, rank in _ISSUES:
@@ -423,12 +450,13 @@ async def ui_quarantine(request: Request):
 
     cards = []
     for e in quarantine.entries():
-        css, label, rank = _issue(e)
         best = (e.match or {}).get("best")
+        fit = _fit(e, best)
+        css, label, rank = _issue(e)
         cards.append({"e": e, "css": css, "label": label, "rank": rank,
                       "group": group_of.get(e.name),
                       "title": _card_title(e),
-                      "best": best,
+                      "best": best, "fit": fit,
                       "score_css": _score_css(best)})
     cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
 

@@ -660,6 +660,30 @@ def run_checks(client, auth, srv: Path):
     truthy("a record with no candidates says so", "no candidates found" in page)
     truthy("an entry with no record says so", "no match recorded" in page)
 
+    truthy("tracks are counted from the files' side",
+           "2 of your 2 files fit" in page and "release has 3" in page)
+
+    # #38: a box set beets matched to the standard edition. The old card led
+    # with "4 of 4", which read as a strong match wrongly refused.
+    big = srv / "quarantine" / "Box Set"
+    for t in range(1, 11):
+        mkflac(big / ("CD 1" if t <= 4 else "CD 2") / f"{t:02d} T.flac",
+               "Box Set", "Someone", f"T{t}", t, 1 if t <= 4 else 2, 2, tracktotal=10)
+    (srv / "logs" / "matches" / "Box Set.json").write_text(json.dumps({"sources": {
+        "musicbrainz": {"similarity": 71.0, "artist": "Someone", "album": "Box Set",
+                        "tracks": 4, "matched_tracks": 4, "extra_items": 6,
+                        "missing_tracks": 0, "penalties": ["unmatched tracks"]}}}))
+    page = client.get("/ui/quarantine", headers=auth).text
+    at = page.index("<h3>Box Set</h3>")
+    card = page[at:]
+    card = card[:card.index('<div class="card')] if '<div class="card' in card else card
+    truthy("an oversized folder says how few of its files fit",
+           "4 of your 10 files fit" in card and "release has 4" in card)
+    truthy("and explains that a plain retry will not help",
+           "plain retry will land here again" in card)
+    shutil.rmtree(big)
+    (srv / "logs" / "matches" / "Box Set.json").unlink()
+
     g = client.get("/quarantine/groups", headers=auth).json()["groups"]
     check("groups the two discs into one release", len(g), 1)
     check("with both members", len(g[0]["members"]), 2)
