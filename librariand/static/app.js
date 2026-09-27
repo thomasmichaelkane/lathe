@@ -8,14 +8,40 @@
  * Cookie auth carries the token, so no header is needed here.
  */
 
+/* A success stays up long enough to read on a phone. An error stays until
+ * it is tapped: it is the message that says WHY something did not happen,
+ * and it is often a path, which does not read in six seconds. Any message
+ * goes on a tap. */
+const FLASH_KEY = "librariand.flash";
+const FLASH_MS = 4500;
+
 const flash = (msg, bad = false) => {
   const el = document.getElementById("flash");
   el.textContent = msg;
   el.classList.toggle("bad", bad);
   el.classList.add("show");
   clearTimeout(flash._t);
-  flash._t = setTimeout(() => el.classList.remove("show"), bad ? 6000 : 3000);
+  if (!bad) flash._t = setTimeout(() => el.classList.remove("show"), FLASH_MS);
 };
+
+document.getElementById("flash")?.addEventListener("click", (ev) => {
+  clearTimeout(flash._t);
+  ev.currentTarget.classList.remove("show");
+});
+
+/* A success is followed by a reload (see act), which used to wipe the
+ * message half a second after it appeared (#34). So it is carried across in
+ * sessionStorage and shown again once the new page is up. Storage can be
+ * unavailable (private windows, blocked site data): then the message is
+ * simply lost, never the action. */
+(() => {
+  let carried = null;
+  try {
+    carried = sessionStorage.getItem(FLASH_KEY);
+    sessionStorage.removeItem(FLASH_KEY);
+  } catch { /* no storage: nothing carried */ }
+  if (carried) flash(carried);
+})();
 
 async function call(method, url, body) {
   const opts = { method, headers: {} };
@@ -48,8 +74,10 @@ async function act(btn, method, url, body, okMsg, used) {
   card && card.classList.add("spin");
   try {
     const data = await call(method, url, body);
-    flash(okMsg || data.detail || "done");
+    const msg = okMsg || data.detail || "done";
+    flash(msg);
     if (used) used.value = "";
+    try { sessionStorage.setItem(FLASH_KEY, msg); } catch { /* see above */ }
     setTimeout(() => location.reload(), 500);
   } catch (err) {
     flash(err.message, true);

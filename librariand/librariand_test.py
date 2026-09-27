@@ -973,7 +973,15 @@ def run_checks(client, auth, srv: Path):
     truthy("nor the Fetch tab's link box",
            'id="link" placeholder="Magnet or .torrent link" autocomplete="off"' in fetch_page)
     js = client.get("/static/app.js").text
-    truthy("and the dashboard empties a field its action consumed",
+    # #34: the reload after a success used to wipe its message at 500ms.
+    truthy("a success message is carried across the reload",
+           "sessionStorage.setItem(FLASH_KEY, msg)" in js
+           and "sessionStorage.getItem(FLASH_KEY)" in js)
+    truthy("errors stay up until tapped",
+           "if (!bad) flash._t = setTimeout" in js)
+    truthy("and any message can be tapped away",
+           'getElementById("flash")?.addEventListener("click"' in js)
+    truthy("the dashboard empties a field its action consumed",
            "if (used) used.value" in js and ", undefined, input)" in js
            and '"re-imported", input)' in js)
     truthy("beside a single retry button", 'data-action="retry"' in resp.text
