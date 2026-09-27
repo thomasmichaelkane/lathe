@@ -49,6 +49,9 @@
       <span>{{ human(t.speed) }}/s</span>
       <span>{{ t.peers }} peer{{ '' if t.peers == 1 else 's' }}</span>
       {% if t.eta_seconds is not none %}<span>{{ (t.eta_seconds / 60)|round(0, 'ceil')|int }} min left</span>{% endif %}
+    {% elif t.state == 'queued' %}
+      <span>Queued — starts when one of aria2's 5 download slots frees up</span>
+      {% if t.done_bytes %}<span>{{ t.progress|round|int }}% so far</span>{% endif %}
     {% elif t.state == 'verifying' %}
       <span>Checking the download</span>
     {% elif t.state == 'paused' %}
