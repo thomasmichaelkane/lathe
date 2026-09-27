@@ -438,6 +438,20 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
     check("then downloads, as the real torrent", t["state"], "downloading")
     check("named from the torrent itself", t["name"], "Tick Album")
     check("at 50%", t["progress"], 50.0)
+
+    # #28: aria2 holds downloads beyond its 5 slots in `waiting`. That used to
+    # read as "downloading" at 0 B/s with no ETA — stalled, to the eye.
+    real = next(r for r in aria2.rows.values() if "bittorrent" in r)
+    real["status"] = "waiting"
+    t = listed()["torrents"][0]
+    check("a download aria2 is holding back is queued", t["state"], "queued")
+    truthy("and still counts as active, so the page keeps polling", t["active"])
+    page = client.get("/ui/fetch", headers=auth).text
+    truthy("the card says it is queued, not stalled", "Queued" in page)
+    truthy("and offers Cancel, not Resume",
+           'data-action="cancel"' in page and 'data-action="resume"' not in page)
+    real["status"] = "active"
+    t = listed()["torrents"][0]
     check("with an ETA", t["eta_seconds"], 5)
     check("nothing is ready to move yet", torrents_mod.ready_count(), 0)
     r = client.post(f"/torrents/{tid}/move", headers=auth)

@@ -213,7 +213,7 @@ def parse_magnet(magnet: str) -> tuple[str, str | None]:
 class Torrent:
     id: str
     name: str
-    state: str          # metadata|downloading|verifying|paused|complete|error|interrupted|unknown
+    state: str          # metadata|queued|downloading|verifying|paused|complete|error|interrupted|unknown
     added_at: float
     progress: float = 0.0
     done_bytes: int = 0
@@ -231,7 +231,9 @@ class Torrent:
 
     @property
     def active(self) -> bool:
-        return self.state in ("metadata", "downloading", "verifying")
+        # Queued counts: it will start by itself, so the page keeps polling
+        # and the card offers Cancel rather than Resume.
+        return self.state in ("metadata", "queued", "downloading", "verifying")
 
 
 def entries() -> tuple[list[Torrent], bool]:
@@ -280,8 +282,13 @@ def _status(d: Path, rec: dict, rows: list[dict], online: bool) -> Torrent:
             t.state = "metadata"
         elif status == "active" and t.total_bytes and t.done_bytes >= t.total_bytes:
             t.state = "verifying"
-        elif status in ("active", "waiting"):
+        elif status == "active":
             t.state = "downloading"
+        elif status == "waiting":
+            # aria2 runs max-concurrent-downloads (5) at once and holds the
+            # rest here. Calling it "downloading" showed a card at 0 B/s with
+            # no ETA, which reads as stalled (#28).
+            t.state = "queued"
         elif status == "paused":
             t.state = "paused"
         elif status == "complete":
