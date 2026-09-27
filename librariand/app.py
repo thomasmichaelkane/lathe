@@ -24,7 +24,11 @@ means `install.sh` deploys it like everything else, with no image to rebuild.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
+import json
+import logging
 import os
 import secrets
 import time
@@ -46,6 +50,12 @@ import system
 import torrents
 
 HERE = Path(__file__).resolve().parent
+
+# One line per state-changing action, to stderr and so to the journal:
+#   journalctl -u librariand
+# answers "what happened when I pressed that" (#31). The access log stays
+# off — the dashboard polls, and every poll would bury the lines that matter.
+log = logging.getLogger("librariand")
 
 # Set in /etc/default/lathe. Empty means no auth, which is a defensible choice
 # on a tailnet with no exposed ports — but it is a choice, so the dashboard
@@ -118,6 +128,8 @@ async def login_form(request: Request):
 @app.post("/login", include_in_schema=False)
 async def login(request: Request, token: str = Form(...)):
     if not (TOKEN and secrets.compare_digest(token.strip(), TOKEN)):
+        log.warning("login from %s: refused — wrong token",
+                    request.client.host if request.client else "?")
         return templates.TemplateResponse(request, "login.html", {"bad": True},
                                           status_code=401)
     r = RedirectResponse("/", status_code=303)
@@ -138,6 +150,63 @@ async def logout():
 
 def _fail(exc: Exception, status: int = 400):
     return JSONResponse({"ok": False, "detail": str(exc)}, status_code=status)
+
+
+def _oneline(text, limit: int = 300) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _logged(action: str):
+    """Log what a state-changing route did: `action target: result`, or
+    `action target: refused — why`. Works on the route's return value, so the
+    routes themselves stay a few lines of translation (see the module
+    docstring) and cannot forget to log a failure branch."""
+    def summarise(kwargs: dict, result) -> None:
+        body = kwargs.get("body")
+        target = next((str(kwargs[k]) for k in ("name", "fetch_id", "tid")
+                       if k in kwargs), "")
+        if not target and body is not None:
+            target = (getattr(body, "link", None) or getattr(body, "device", None)
+                      or " + ".join(getattr(body, "entries", None) or []))
+        if isinstance(result, JSONResponse):
+            status = result.status_code
+            try:
+                data = json.loads(result.body)
+            except ValueError:
+                data = {}
+        else:
+            status, data = 200, result if isinstance(result, dict) else {}
+        ok = status < 400 and data.get("ok", True) is not False
+        dry = kwargs.get("dry_run") or getattr(body, "dry_run", False)
+        what = action + (" (dry run)" if dry else "")
+        (log.info if ok else log.warning)(
+            "%s %s: %s%s", what, _oneline(target, 120),
+            "" if ok else "refused — ", _oneline(data.get("detail", "done")))
+
+    def deco(fn):
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception:
+                    log.exception("%s: failed", action)
+                    raise
+                summarise(kwargs, result)
+                return result
+        else:
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception:
+                    log.exception("%s: failed", action)
+                    raise
+                summarise(kwargs, result)
+                return result
+        return wrapper
+    return deco
 
 
 class MergeBody(BaseModel):
@@ -181,6 +250,7 @@ async def api_groups(online: bool = False):
 
 
 @app.post("/quarantine/merge", dependencies=[Depends(require_api)])
+@_logged("merge")
 async def api_merge(body: MergeBody):
     try:
         return {"ok": True, "detail": quarantine.merge(
@@ -190,6 +260,7 @@ async def api_merge(body: MergeBody):
 
 
 @app.post("/quarantine/{name}/retry", dependencies=[Depends(require_api)])
+@_logged("retry")
 async def api_retry(name: str, dry_run: bool = False):
     try:
         return {"ok": True, "detail": quarantine.retry([name], dry_run=dry_run)}
@@ -198,6 +269,7 @@ async def api_retry(name: str, dry_run: bool = False):
 
 
 @app.post("/quarantine/{name}/resolve", dependencies=[Depends(require_api)])
+@_logged("resolve")
 async def api_resolve(name: str, body: ResolveBody):
     try:
         result = resolve_mod.resolve(name, body.identifier, dry_run=body.dry_run)
@@ -207,6 +279,7 @@ async def api_resolve(name: str, body: ResolveBody):
 
 
 @app.delete("/quarantine/{name}", dependencies=[Depends(require_api)])
+@_logged("delete")
 async def api_drop(name: str):
     # No dry_run: quarantine.drop() has no such flag, and inventing one here
     # would mean a second deletion path. The confirmation lives in the UI,
@@ -224,6 +297,7 @@ async def api_fetched():
 
 
 @app.post("/fetched/{fetch_id}/approve", dependencies=[Depends(require_api)])
+@_logged("approve")
 async def api_approve(fetch_id: str, dry_run: bool = False):
     try:
         return {"ok": True, "detail": fetched.approve(fetch_id, dry_run=dry_run)}
@@ -232,6 +306,7 @@ async def api_approve(fetch_id: str, dry_run: bool = False):
 
 
 @app.post("/fetched/{fetch_id}/reject", dependencies=[Depends(require_api)])
+@_logged("reject")
 async def api_reject(fetch_id: str, dry_run: bool = False):
     try:
         return {"ok": True, "detail": fetched.reject(fetch_id, dry_run=dry_run)}
@@ -258,6 +333,7 @@ def api_torrents():
 
 
 @app.post("/torrents", dependencies=[Depends(require_api)])
+@_logged("torrent add")
 def api_torrent_add(body: LinkBody):
     try:
         return {"ok": True, **torrents.add(body.link)}
@@ -266,6 +342,7 @@ def api_torrent_add(body: LinkBody):
 
 
 @app.post("/torrents/{tid}/move", dependencies=[Depends(require_api)])
+@_logged("torrent move")
 def api_torrent_move(tid: str):
     try:
         return {"ok": True, "detail": torrents.move(tid)}
@@ -276,6 +353,7 @@ def api_torrent_move(tid: str):
 
 
 @app.post("/torrents/{tid}/resume", dependencies=[Depends(require_api)])
+@_logged("torrent resume")
 def api_torrent_resume(tid: str):
     try:
         return {"ok": True, "detail": torrents.resume(tid)}
@@ -284,6 +362,7 @@ def api_torrent_resume(tid: str):
 
 
 @app.delete("/torrents/{tid}", dependencies=[Depends(require_api)])
+@_logged("torrent cancel")
 def api_torrent_cancel(tid: str):
     try:
         return {"ok": True, "detail": torrents.cancel(tid)}
@@ -292,6 +371,7 @@ def api_torrent_cancel(tid: str):
 
 
 @app.post("/inbox/nudge", dependencies=[Depends(require_api)])
+@_logged("inbox nudge")
 async def api_inbox_nudge():
     # With the watcher down a nudge fires nothing, and saying "started" would
     # be a lie. Fixing that needs root, so say what to run instead. None means
@@ -320,6 +400,7 @@ async def api_rips():
 
 
 @app.post("/eject", dependencies=[Depends(require_api)])
+@_logged("eject")
 async def api_eject(body: EjectBody | None = None):
     try:
         return {"ok": True, "detail": rips.eject((body or EjectBody()).device)}
@@ -496,6 +577,10 @@ async def ui_rips(request: Request):
 
 def main() -> None:
     import uvicorn
+    # systemd's journal adds the timestamp and unit; the level is what is left.
+    # INFO for our own lines only — other libraries stay at WARNING.
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+    log.setLevel(logging.INFO)
     uvicorn.run(app,
                 host=os.environ.get("LIBRARIAND_HOST", "0.0.0.0"),
                 port=int(os.environ.get("LIBRARIAND_PORT", "8080")),
