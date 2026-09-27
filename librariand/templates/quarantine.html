@@ -76,7 +76,10 @@
      An ID does NOT force acceptance: in quiet mode beets still needs a strong
      match (plan §13), so it fixes a wrong-release guess, not a near miss. #}
   <div class="field">
+    {# autocomplete="off": these are numbered by position, so a value the
+       browser restored after a reload could land on a different card. #}
     <input type="text" id="id-{{ loop.index }}" data-resolve-for="{{ loop.index }}"
+           autocomplete="off"
            placeholder="MusicBrainz release ID or link"
            title="Points beets at this release. It still needs a 96% match to import — missing tracks will not pass."
            autocapitalize="off" autocorrect="off" spellcheck="false">

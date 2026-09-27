@@ -25,7 +25,7 @@
   <button class="primary add-open" data-action="add-open" aria-expanded="false"
           {{ 'disabled' if not aria2_online }}>+</button>
   <div class="field" id="add-form" hidden>
-    <input type="text" id="link" placeholder="Magnet or .torrent link"
+    <input type="text" id="link" placeholder="Magnet or .torrent link" autocomplete="off"
            autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="primary" data-action="add">Fetch</button>
   </div>
