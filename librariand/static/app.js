@@ -110,6 +110,13 @@ document.addEventListener("click", (ev) => {
                  "moved back to the inbox");
     }
 
+    case "accept":
+      if (!confirm(`Import this as ${a.release}?\n\n` +
+                   `beets scored it ${a.pct}% — just short of the 96% it ` +
+                   `accepts on its own. Your files will be retagged with ` +
+                   `MusicBrainz's names and filed into the library.`)) return;
+      return act(btn, "POST", `/quarantine/${name}/accept`);
+
     case "drop":
       if (!confirm(`Delete "${a.name}" permanently?\n\nThe files are removed from disk. This cannot be undone.`)) return;
       return act(btn, "DELETE", `/quarantine/${name}`, undefined, "deleted");
