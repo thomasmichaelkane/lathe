@@ -57,6 +57,9 @@ HERE = Path(__file__).resolve().parent
 # answers "what happened when I pressed that" (#31). The access log stays
 # off — the dashboard polls, and every poll would bury the lines that matter.
 log = logging.getLogger("librariand")
+# Silent unless main() (or a test) attaches somewhere to write; stops Python's
+# last-resort handler printing warnings to stderr on import.
+log.addHandler(logging.NullHandler())
 
 # Set in /etc/default/lathe. Empty means no auth, which is a defensible choice
 # on a tailnet with no exposed ports — but it is a choice, so the dashboard
@@ -313,6 +316,18 @@ async def api_resolve(name: str, body: ResolveBody):
     return result if result.get("ok") else JSONResponse(result, status_code=409)
 
 
+@app.post("/quarantine/{name}/accept", dependencies=[Depends(require_api)])
+@_logged("accept")
+async def api_accept(name: str, dry_run: bool = False):
+    # "Allow anyway" (#55): the release beets tried, despite its score. What
+    # may be accepted is decided in resolve.acceptable(), not here.
+    try:
+        result = resolve_mod.accept(name, dry_run=dry_run)
+    except quarantine.QuarantineError as exc:
+        return _fail(exc, 409)
+    return result if result.get("ok") else JSONResponse(result, status_code=409)
+
+
 @app.delete("/quarantine/{name}", dependencies=[Depends(require_api)])
 @_logged("delete")
 async def api_drop(name: str):
@@ -559,7 +574,10 @@ def _score_css(best: dict | None) -> str:
     if not best:
         return "none"
     s = best["similarity"]
-    return "ok" if s >= 96 else "warn" if s >= 75 else "alarm"
+    # Strictly above: beets needs distance strictly below 0.04, and the
+    # plugin rounds to one decimal, so a refused 0.0400 records as 96.0 and
+    # used to show green (#55).
+    return "ok" if s > 96 else "warn" if s >= 75 else "alarm"
 
 
 @app.get("/ui/quarantine", response_class=HTMLResponse, include_in_schema=False,
@@ -583,6 +601,7 @@ async def ui_quarantine(request: Request):
                       "group": group_of.get(e.name),
                       "title": _card_title(e),
                       "best": best, "fit": fit,
+                      "can_accept": resolve_mod.acceptable(best) is None,
                       "score_css": _score_css(best)})
     cards.sort(key=lambda c: (c["rank"], c["e"].name.lower()))
 

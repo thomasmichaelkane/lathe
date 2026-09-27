@@ -698,6 +698,10 @@ def run_checks(client, auth, srv: Path):
     truthy("and an untagged one by a stand-in", "<h3>Import " in page)
     truthy("the similarity is shown", "91%" in page)
     truthy("coloured by beets' thresholds", 'class="score warn"' in page)
+    import app as app_mod2
+    check("a refused 96.0% is not shown as a pass",
+          app_mod2._score_css({"similarity": 96.0}), "warn")
+    check("but anything strictly over is", app_mod2._score_css({"similarity": 96.1}), "ok")
     truthy("the missing label is marked missing", 'class="missing">missing<' in page)
     truthy("and missing tracks are called out", "1 missing" in page)
     truthy("a record with no candidates says so", "no candidates found" in page)
@@ -899,6 +903,70 @@ def run_checks(client, auth, srv: Path):
         truthy("an unreachable MusicBrainz is reported as such",
                r.status_code == 400 and "could not reach" in r.json()["detail"])
         shutil.rmtree(d)
+
+        # #55: "Allow anyway". A stub beet that only imports when the run
+        # carries the widened threshold — so passing proves the override is
+        # really applied, and only on this path.
+        needs_override = bin_dir / "beet-needs-override"
+        needs_override.write_text(
+            "#!/bin/sh\n"
+            "cfg=''; prev=''; for a; do [ \"$prev\" = -c ] && cfg=$a; prev=$a; last=$a; done\n"
+            "[ -n \"$BEETSDIR\" ] && grep -q 'strong_rec_thresh: 0.25' \"$cfg\" || exit 0\n"
+            f"mkdir -p '{srv}/music/Accepted'\n"
+            f"find \"$last\" -name '*.flac' -exec mv {{}} '{srv}/music/Accepted/' \\;\n")
+        needs_override.chmod(0o755)
+        resolve_mod.BEET = str(needs_override)
+        close = "c1ec1ec1-0000-4000-8000-00000000c1ec"
+        d = entry("Close Call")
+        (srv / "logs" / "matches" / "Close Call.json").write_text(json.dumps(
+            {"sources": {"musicbrainz": {
+                "similarity": 95.9, "artist": "The Equatics", "album": "Doin It!!!!",
+                "year": 2010, "id": close, "tracks": 1, "matched_tracks": 1,
+                "extra_items": 0, "missing_tracks": 0,
+                "penalties": ["tracks", "artist"]}}}))
+
+        short = entry("Short Release")
+        (srv / "logs" / "matches" / "Short Release.json").write_text(json.dumps(
+            {"sources": {"musicbrainz": {
+                "similarity": 95.0, "artist": "Someone", "album": "Short Release",
+                "id": close, "tracks": 2, "matched_tracks": 1,
+                "extra_items": 0, "missing_tracks": 1,
+                "penalties": ["missing tracks"]}}}))
+
+        page = client.get("/ui/quarantine", headers=auth).text
+        card = page[page.index("<h3>Close Call</h3>"):]
+        card = card[:card.index('<div class="card')] if '<div class="card' in card else card
+        truthy("a near miss whose files all fit offers Allow anyway",
+               'data-action="accept"' in card and "The Equatics — Doin It!!!! (2010)" in card)
+        ripped = page[page.index("<h3>Short Release</h3>"):]
+        ripped = ripped[:ripped.index('<div class="card')] if '<div class="card' in ripped else ripped
+        truthy("one with a missing track does not", 'data-action="accept"' not in ripped)
+
+        r = client.post("/quarantine/Close Call/accept?dry_run=true", headers=auth).json()
+        truthy("accepting uses the release beets tried, from its record",
+               r.get("id") == close and f"--search-id {close}" in r.get("command", ""))
+        truthy("with the production config as the base, not edited",
+               "strong_rec_thresh" not in (srv / "config" / "beets" / "config.yaml").read_text())
+
+        r = client.post("/quarantine/Close Call/resolve", headers=auth,
+                        json={"identifier": close})
+        check("a plain resolve still refuses the near miss", r.status_code, 409)
+        r = client.post("/quarantine/Close Call/accept", headers=auth)
+        check("allow anyway imports it", r.status_code, 200)
+        truthy("naming what it was allowed as", "allowed anyway as The Equatics"
+               in r.json().get("detail", ""))
+        check("and the card goes with it", d.exists(), False)
+
+        r = client.post("/quarantine/Short Release/accept", headers=auth)
+        check("a release missing a track is refused", r.status_code, 409)
+        truthy("saying it is a different edition",
+               "different edition" in r.json()["detail"])
+        truthy("and leaving the entry alone", (short / "01 One.flac").exists())
+        shutil.rmtree(short)
+        (srv / "logs" / "matches" / "Short Release.json").unlink()
+        r = client.post("/quarantine/The Wall (Disc 1)/accept", headers=auth)
+        check("an entry with no candidate cannot be accepted", r.status_code, 409)
+        truthy("because beets recorded none", "no release to accept" in r.json()["detail"])
     finally:
         resolve_mod.BEET = real_beet
 

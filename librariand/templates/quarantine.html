@@ -87,6 +87,16 @@
             data-name="{{ c.e.name }}" data-idx="{{ loop.index }}">Retry</button>
     <button class="danger" data-action="drop" data-name="{{ c.e.name }}">Delete</button>
   </div>
+  {# Only when every file fits the release beets tried and it came close:
+     a near miss on cosmetic tag noise. Anything else is a wrong edition,
+     which accepting would mislabel (#55). #}
+  {% if c.can_accept %}
+  <div class="actions">
+    <button data-action="accept" data-name="{{ c.e.name }}"
+            data-release="{{ b.artist }} — {{ b.album }}{% if b.year %} ({{ b.year }}){% endif %}"
+            data-pct="{{ b.similarity }}">Allow anyway</button>
+  </div>
+  {% endif %}
 </div>
 {% endfor %}
 

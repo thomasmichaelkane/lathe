@@ -29,10 +29,11 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from quarantine import (QUARANTINE, QuarantineError, _audio_paths,
-                        _resolve as _resolve_entry)
+                        _resolve as _resolve_entry, read_match)
 
 BEET = os.environ.get("BEET_CMD", "beet")
 BEETS_CONFIG = Path(os.environ.get("BEETS_CONFIG", "/srv/config/beets/config.yaml"))
@@ -41,6 +42,20 @@ BEETS_CONFIG = Path(os.environ.get("BEETS_CONFIG", "/srv/config/beets/config.yam
 # over a long release on a Pi is not fast, and a timeout that fires mid-import
 # leaves a half-moved album.
 TIMEOUT = int(os.environ.get("RESOLVE_TIMEOUT", "1800"))
+
+# "Allow anyway" (#55). beets accepts a match only when its distance is
+# strictly below strong_rec_thresh (0.04 — 96% similar), and a forced
+# --search-id changes WHICH release is scored, not that rule. So a correct
+# release with cosmetic tag noise — a remaster suffix, a punctuated title —
+# loops in quarantine forever. Accepting widens the threshold for ONE run, to
+# beets' own medium_rec_thresh default (0.25), and nothing else:
+#
+#   - only by a person pressing it on a card, never in the automatic import
+#   - only against the release beets itself tried and showed on that card
+#   - only when every file fits it: no missing tracks, no unmatched files.
+#     Those are a different edition, not noise, and max_rec rightly caps them.
+ACCEPT_THRESH = 0.25
+ACCEPT_MIN_SIMILARITY = 75.0
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 UUID_RE = re.compile(rf"^{_UUID}$", re.I)
@@ -96,7 +111,8 @@ def classify(identifier: str) -> tuple[str, str, str]:
     )
 
 
-def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
+def resolve(name: str, identifier: str, dry_run: bool = False,
+            accept: bool = False) -> dict:
     """Import one quarantine entry against `identifier`.
 
     Imports in place, from the quarantine directory. `import.move: yes` means a
@@ -124,15 +140,31 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
             f"from its venv at /usr/local/lib/beets — re-run install.sh."
         )
 
-    cmd = [BEET, "-c", str(BEETS_CONFIG), "-P", disable,
-           "import", "--search-id", ident, str(path)]
+    env = None
+    overlay = None
+    if accept:
+        # The production config stays the base (BEETSDIR), and a throwaway
+        # overlay changes the one threshold for this run — the same layering
+        # beets-check.sh uses. The deployed config file is never edited.
+        fd, overlay = tempfile.mkstemp(prefix="librariand-accept-", suffix=".yaml")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"match:\n  strong_rec_thresh: {ACCEPT_THRESH}\n")
+        env = {**os.environ, "BEETSDIR": str(BEETS_CONFIG.parent)}
+        cmd = [BEET, "-c", overlay, "-P", disable,
+               "import", "--search-id", ident, str(path)]
+    else:
+        cmd = [BEET, "-c", str(BEETS_CONFIG), "-P", disable,
+               "import", "--search-id", ident, str(path)]
 
     if dry_run:
-        return {"ok": True, "dry_run": True, "source": kind,
+        if overlay:
+            os.unlink(overlay)
+        return {"ok": True, "dry_run": True, "source": kind, "id": ident,
                 "command": " ".join(cmd), "detail": "nothing was run"}
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=TIMEOUT, env=env)
     except subprocess.TimeoutExpired:
         raise QuarantineError(
             f"beets did not finish within {TIMEOUT}s. It may still be running; "
@@ -140,6 +172,12 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         ) from None
     except OSError as exc:
         raise QuarantineError(f"could not run beets: {exc}") from None
+    finally:
+        if overlay:
+            try:
+                os.unlink(overlay)
+            except OSError:
+                pass
 
     output = (proc.stdout or "") + (proc.stderr or "")
 
@@ -185,3 +223,40 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         ),
         "output": output.strip(),
     }
+
+
+def acceptable(best: dict | None) -> str | None:
+    """Why this candidate may NOT be accepted anyway, or None if it may."""
+    if not best or not best.get("id"):
+        return "beets recorded no release to accept for this entry"
+    if best.get("missing_tracks"):
+        return (f"the release has {best['missing_tracks']} track(s) your files "
+                "don't — that is a different edition, not a near miss")
+    if best.get("extra_items"):
+        return (f"{best['extra_items']} of your files have no place on the "
+                "release — that is a different edition, not a near miss")
+    if (best.get("similarity") or 0) < ACCEPT_MIN_SIMILARITY:
+        return (f"only {best.get('similarity')}% similar — too far from the "
+                "release to accept blind; paste the right release ID instead")
+    return None
+
+
+def accept(name: str, dry_run: bool = False) -> dict:
+    """Import an entry against the release beets tried, despite its score.
+
+    The release comes from beets' own match record for the entry, never from
+    the request: what gets accepted is exactly what the card showed.
+    """
+    _resolve_entry(name)
+    best = (read_match(name) or {}).get("best")
+    why_not = acceptable(best)
+    if why_not:
+        raise QuarantineError(f"can't allow {name} anyway: {why_not}")
+    result = resolve(name, best["id"], dry_run=dry_run, accept=True)
+    result["release"] = {k: best.get(k) for k in
+                         ("artist", "album", "year", "similarity", "source")}
+    if result.get("ok") and not dry_run:
+        result["detail"] = (f"allowed anyway as {best.get('artist')} — "
+                            f"{best.get('album')}; " + result["detail"])
+    return result
+
