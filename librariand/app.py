@@ -335,6 +335,9 @@ def _page(request: Request, name: str, **ctx) -> HTMLResponse:
     # finished torrent to move, and a farfetchd download to review.
     counts = system.pending_counts()
     counts["fetch"] = counts["fetched"] + torrents.ready_count()
+    # Shown quietly when nothing is ready, so the badge says "4 going" rather
+    # than "nothing" (#36). Ready always wins: that is the one that needs you.
+    counts["fetch_active"] = torrents.active_count()
     return templates.TemplateResponse(
         request, name,
         {"no_auth": not TOKEN, "human": quarantine._human,

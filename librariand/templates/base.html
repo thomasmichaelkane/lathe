@@ -23,7 +23,12 @@
     <a href="/ui/quarantine" class="{{ 'on' if nav == 'quarantine' }}">Quarantine
       <span class="count {{ 'zero' if not counts.quarantine }}">{{ counts.quarantine }}</span></a>
     <a href="/ui/fetch"      class="{{ 'on' if nav == 'fetch' }}">Fetch
-      <span class="count {{ 'zero' if not counts.fetch }}">{{ counts.fetch }}</span></a>
+      {# Bright: ready and waiting on you. Quiet ↓N: downloads in progress,
+         nothing ready yet. The id lets the Fetch tab's poll keep it live. #}
+      {% if counts.fetch %}<span class="count" id="fetch-count">{{ counts.fetch }}</span>
+      {%- elif counts.fetch_active %}<span class="count zero" id="fetch-count"
+            title="{{ counts.fetch_active }} in progress">↓{{ counts.fetch_active }}</span>
+      {%- else %}<span class="count zero" id="fetch-count">0</span>{% endif %}</a>
     <a href="/ui/rips"       class="{{ 'on' if nav == 'rips' }}">Rips</a>
   </nav>
 </header>
