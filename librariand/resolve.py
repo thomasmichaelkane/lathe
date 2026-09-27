@@ -31,7 +31,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from quarantine import QUARANTINE, QuarantineError, _resolve as _resolve_entry
+from quarantine import (QUARANTINE, QuarantineError, _audio_paths,
+                        _resolve as _resolve_entry)
 
 BEET = os.environ.get("BEET_CMD", "beet")
 BEETS_CONFIG = Path(os.environ.get("BEETS_CONFIG", "/srv/config/beets/config.yaml"))
@@ -73,10 +74,16 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
     """Import one quarantine entry against `identifier`.
 
     Imports in place, from the quarantine directory. `import.move: yes` means a
-    successful import physically relocates the files into /srv/music and leaves
-    the quarantine entry empty, so "did the entry disappear" is the honest
-    success test — beets exits 0 whether or not it matched anything, because
-    `quiet_fallback: skip` treats a non-match as an ordinary outcome.
+    successful import physically relocates the AUDIO into /srv/music, so "is
+    any audio left in the entry" is the honest success test — beets exits 0
+    whether or not it matched anything, because `quiet_fallback: skip` treats
+    a non-match as an ordinary outcome.
+
+    Audio, not files. beets leaves everything else behind — an `Edition
+    Info.txt`, a `folder.jpg`, a .cue — and judging by "any file remains" used
+    to report a successful import as "did not match", leaving a blank card of
+    leftovers behind. Same rule as inbox-import.sh's sweep. On success the
+    leftovers are deleted, so the card goes with the album.
     """
     path = _resolve_entry(name)          # rejects traversal, checks existence
     kind, disable = classify(identifier)
@@ -118,12 +125,20 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         r"musicbrainz: Error|Max retries exceeded|Read timed out", output, re.I
     )
 
-    still_there = (QUARANTINE / name).exists() and any(
-        p.is_file() for p in (QUARANTINE / name).rglob("*")
-    ) if (QUARANTINE / name).is_dir() else (QUARANTINE / name).exists()
-
-    if not still_there:
-        return {"ok": True, "source": kind, "detail": "imported",
+    entry = QUARANTINE / name
+    if not (entry.exists() and _audio_paths(entry)):
+        leftovers = []
+        if entry.is_dir():
+            leftovers = sorted(str(p.relative_to(entry))
+                               for p in entry.rglob("*") if p.is_file())
+            shutil.rmtree(entry, ignore_errors=True)
+        elif entry.exists():
+            entry.unlink()
+        detail = "imported"
+        if leftovers:
+            detail += f" — cleared {len(leftovers)} leftover file(s): " + \
+                      ", ".join(leftovers[:5]) + (" …" if len(leftovers) > 5 else "")
+        return {"ok": True, "source": kind, "detail": detail,
                 "output": output.strip()}
 
     if unreachable:
