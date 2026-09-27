@@ -723,6 +723,58 @@ def run_checks(client, auth, srv: Path):
     check("a Bandcamp URL selects the Bandcamp source", r["source"], "bandcamp")
     truthy("and disables musicbrainz for that pass", "-P musicbrainz" in r["command"])
 
+    # A real run, against a stub beet that does what beets does on a match:
+    # moves the AUDIO out and leaves everything else. The entry holding only
+    # an Edition Info.txt and a folder.jpg afterwards used to be reported as
+    # "did not match" (#41).
+    import resolve as resolve_mod
+    bin_dir = srv.parent / "bin"
+    moving = bin_dir / "beet-moves-audio"
+    moving.write_text(
+        "#!/bin/sh\n"
+        "for last; do :; done\n"
+        f"mkdir -p '{srv}/music/Imported'\n"
+        f"find \"$last\" -name '*.flac' -exec mv {{}} '{srv}/music/Imported/' \\;\n")
+    silent = bin_dir / "beet-matches-nothing"
+    silent.write_text("#!/bin/sh\nexit 0\n")
+    offline = bin_dir / "beet-offline"
+    offline.write_text("#!/bin/sh\necho 'musicbrainz: Error: Max retries exceeded'\n")
+    for f in (moving, silent, offline):
+        f.chmod(0o755)
+
+    def entry(name):
+        d = srv / "quarantine" / name
+        mkflac(d / "01 One.flac", name, "Someone", "One", 1, 1, 1, tracktotal=1)
+        (d / "Edition Info.txt").write_text("ripped by someone")
+        (d / "folder.jpg").write_bytes(b"\xff\xd8")
+        return d
+
+    real_beet = resolve_mod.BEET
+    uuid = {"identifier": "c9b6b2e0-1111-2222-3333-444455556666"}
+    try:
+        resolve_mod.BEET = str(moving)
+        d = entry("Leftovers Album")
+        r = client.post("/quarantine/Leftovers Album/resolve", headers=auth, json=uuid)
+        check("an import that leaves clutter behind is a success", r.status_code, 200)
+        truthy("reported as imported", r.json().get("ok") is True)
+        truthy("naming what it cleared", "Edition Info.txt" in r.json()["detail"])
+        check("and the leftover entry is gone, not a blank card", d.exists(), False)
+
+        resolve_mod.BEET = str(silent)
+        d = entry("Unmatched Album")
+        r = client.post("/quarantine/Unmatched Album/resolve", headers=auth, json=uuid)
+        check("a real non-match is still a 409", r.status_code, 409)
+        truthy("and leaves the entry exactly as it was",
+               (d / "01 One.flac").exists() and (d / "folder.jpg").exists())
+
+        resolve_mod.BEET = str(offline)
+        r = client.post("/quarantine/Unmatched Album/resolve", headers=auth, json=uuid)
+        truthy("an unreachable MusicBrainz is reported as such",
+               r.status_code == 400 and "could not reach" in r.json()["detail"])
+        shutil.rmtree(d)
+    finally:
+        resolve_mod.BEET = real_beet
+
     section("fetched")
     f = client.get("/fetched", headers=auth).json()["entries"]
     check("lists only finished downloads", len(f), 3)
