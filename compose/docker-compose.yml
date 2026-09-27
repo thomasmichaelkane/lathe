@@ -128,6 +128,12 @@ services:
   aria2:
     build: ./aria2
     image: lathe-aria2
+    # Built here and never published, so there is nothing to pull. Without
+    # this, every fresh `up` first asks Docker Hub for lathe-aria2 and prints
+    # "pull access denied" before building it anyway (#27). The cost is a
+    # rebuild on every `up`: every layer is cached, so it is seconds and needs
+    # no network. `build --pull aria2` is still how to pick up a newer aria2.
+    pull_policy: build
     container_name: aria2
     profiles: ["torrents"]
     restart: unless-stopped
