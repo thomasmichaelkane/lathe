@@ -40,6 +40,11 @@ SETTLE_TIMEOUT="${SETTLE_TIMEOUT:-7200}"
 # not sit through fifteen-second sleeps.
 SETTLE_POLL="${SETTLE_POLL:-15}"
 
+# Splits single-file CD images (+ .cue) into tracks before beets sees them —
+# see ingest/cuesplit.py (#59). Overridable so the test harness runs the repo
+# copy; deployed next to this script by install.sh.
+CUESPLIT="${CUESPLIT:-/usr/local/bin/cuesplit.py}"
+
 # Notification settings. All optional, all empty by default, and all supplied
 # by /etc/default/lathe via the unit's EnvironmentFile — never from the repo,
 # because the ntfy topic and the Navidrome password are both live credentials.
@@ -169,6 +174,21 @@ has_audio() {
 # Counted with the same predicate as the sweep (directories AND loose files),
 # so that `imported = before - moved` is exact — Bandcamp single-track
 # downloads arrive as a bare .flac.
+# CD images first. One audio file holding the whole disc, plus a cue sheet,
+# can never match a release: beets sees a single 45-minute track (#59). Split
+# them here, per item, so every entry point gets the same treatment. A split
+# that fails leaves the item exactly as it was — it then quarantines, as it
+# always would have — and never stops the import.
+if [ -x "$CUESPLIT" ]; then
+  while IFS= read -r -d '' item; do
+    if ! "$CUESPLIT" "$item" 2>&1 | tee -a "$LOG"; then
+      log "inbox-import: cuesplit could not split everything in $(basename "$item") — importing it as it is"
+    fi
+  done < <(find "$INBOX" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+else
+  log "inbox-import: $CUESPLIT not found — CD images will not be split"
+fi
+
 ITEMS=()
 HAD_AUDIO=()
 while IFS= read -r -d '' item; do

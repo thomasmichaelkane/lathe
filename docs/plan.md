@@ -826,6 +826,14 @@ import without beets ever seeing it — and `PathChanged` does not fire again
 once the service finishes. Now, if anything new is in the inbox at the end,
 the script simply runs again.
 
+**CD images are split first.** A disc ripped as one audio file plus a `.cue`
+sheet can never match a release: beets sees a single 45-minute track. Before
+the beets passes, `inbox-import.sh` runs `cuesplit.py` on each item, which
+splits any directory holding exactly one audio file and a cue with more than
+one track into tagged FLAC tracks (each disc folder of a set on its own).
+It writes the tracks aside first and only then removes the image, so a split
+that fails leaves the item as it was, to quarantine as before (#59).
+
 **Leftover clutter is not a failed import.** beets moves the audio and leaves
 everything else: a `.cue`, an EAC `.log`, an `.m3u`, `Front.jpg`, the
 `fetch.json` every approved fetch carries. Its `clutter` setting only covers
@@ -1242,6 +1250,7 @@ because almost nothing runs from where it is checked out:
 | `librariand/requirements.txt` | installed into `/usr/local/lib/librariand/venv` |
 | `ingest/beets/requirements.txt` | installed into `/usr/local/lib/beets`, with `/usr/local/bin/beet` → its `bin/beet` |
 | `ingest/beets-check.sh` | `/usr/local/bin/beets-check.sh` — run as `music` after every deploy |
+| `ingest/cuesplit.py` | `/usr/local/bin/cuesplit.py` — splits CD images before import (§6.5) |
 | *(apt, only if missing)* | `ffmpeg`, `python3-venv` — installed, never upgraded, never removed by `--uninstall`. `git` stays manual: you need it to get `install.sh` |
 | `systemd/99-autorip.rules` | `/etc/udev/rules.d/` |
 | `systemd/journald.conf.d/lathe.conf` | `/etc/systemd/journald.conf.d/` |
