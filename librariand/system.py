@@ -17,6 +17,7 @@ lock contention. The filesystem is already the source of truth for this system
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -159,8 +160,21 @@ def _unit_active(unit: str) -> bool | None:
     return proc.stdout.strip() == "active"
 
 
+# The suffix the beets `multidisc` path template writes: `$album%if{$multidisc,
+# (Disc $disc)}`, with $disc zero-padded on beets 2.x (§6.3). Deliberately this
+# exact shape and nothing looser — quarantine.strip_disc_marker also knows
+# "CD2", "(1 of 2)" and "Vol. 3", which are real album titles once imported.
+DISC_FOLDER = re.compile(r" \(Disc \d+\)$")
+
+
 def _walk_library() -> dict:
-    """Count albums and artists from the directory layout §6.3 enforces."""
+    """Count albums and artists from the directory layout §6.3 enforces.
+
+    A multi-disc release is one folder PER DISC on disk but one album to
+    Navidrome and every client, which group by tags (§6.5a). So the disc
+    suffix is stripped before counting, or a box set counts once per disc and
+    the overview disagrees with the library it describes (#35).
+    """
     if not MUSIC.is_dir():
         return {"albums": 0, "artists": 0, "top_artists": [], "available": False}
 
@@ -169,13 +183,14 @@ def _walk_library() -> dict:
     for artist_dir in MUSIC.iterdir():
         if not artist_dir.is_dir() or artist_dir.name.startswith("."):
             continue
-        n = 0
+        seen: set[str] = set()
         try:
             for album_dir in artist_dir.iterdir():
                 if album_dir.is_dir() and not album_dir.name.startswith("."):
-                    n += 1
+                    seen.add(DISC_FOLDER.sub("", album_dir.name))
         except OSError:
             continue
+        n = len(seen)
         if n:
             per_artist[artist_dir.name] = n
             albums += n
