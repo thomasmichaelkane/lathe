@@ -162,6 +162,7 @@ run_import() {
       LOG="$TMP/import.log" \
       SETTLE_SECONDS=1 \
       SETTLE_POLL=1 \
+      CUESPLIT="$SCRIPT_DIR/cuesplit.py" \
       STUB_ARGS="$TMP/args.txt" \
       STUB_MATCH="${STUB_MATCH:-}" \
       STUB_STRIP="${STUB_STRIP:-}" \
@@ -316,6 +317,83 @@ has   "the late arrival is offered to beets"      "$TMP/inbox/Late Arrival" "$TM
 # is the order: offered first, swept second.
 check "and only then quarantined"                 "$(ls "$TMP/quarantine")" "Late Arrival"
 check "the inbox ends empty"                      "$(count "$TMP/inbox")" "0"
+
+echo
+echo "CD images are split into tracks before beets sees them (#59)"
+
+# A 6-second "disc" as one FLAC, and a cue for three 2-second tracks. The cue
+# names a .wav (the image was re-encoded after ripping, as they usually are)
+# and is cp1252, as Windows rippers write them.
+mkimage() {  # dir
+  ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=330:duration=6" "$1/CDImage.flac"
+  python3 - "$1/CDImage.cue" <<'PY'
+import sys
+cue = """REM DATE 1982
+PERFORMER "Richard & Linda Thompson"
+TITLE "Shoot Out the Lights"
+FILE "CDImage.wav" WAVE
+  TRACK 01 AUDIO
+    TITLE "Don't Renege on Our Love"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Walking on a Wire"
+    INDEX 00 00:01:70
+    INDEX 01 00:02:00
+  TRACK 03 AUDIO
+    TITLE "Três"
+    INDEX 01 00:04:00
+"""
+open(sys.argv[1], "w", encoding="cp1252", newline="\r\n").write(cue)
+PY
+}
+
+STUB_MATCH="" STUB_MB_ERROR="" \
+CASE_NTFY="" CASE_ND_URL="" CASE_ND_USER="" CASE_ND_PASS="" \
+run_import '
+  mkdir -p "$TMP/inbox/Image Album" "$TMP/inbox/Per Track Rip" "$TMP/inbox/One Track Cue" "$TMP/inbox/Broken Image"
+  mkimage "$TMP/inbox/Image Album"
+  mkdir -p "$TMP/inbox/Two Disc Image/CD1" "$TMP/inbox/Two Disc Image/CD2"
+  mkimage "$TMP/inbox/Two Disc Image/CD1"
+  mkimage "$TMP/inbox/Two Disc Image/CD2"
+  for t in 1 2 3; do
+    ffmpeg -loglevel error -y -f lavfi -i "sine=duration=1" "$TMP/inbox/Per Track Rip/0$t Song.flac"
+  done
+  cp "$TMP/inbox/Image Album/CDImage.cue" "$TMP/inbox/Per Track Rip/album.cue"
+  ffmpeg -loglevel error -y -f lavfi -i "sine=duration=2" "$TMP/inbox/One Track Cue/Single.flac"
+  printf "FILE \"Single.flac\" WAVE\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n" > "$TMP/inbox/One Track Cue/single.cue"
+  printf "not audio at all" > "$TMP/inbox/Broken Image/CDImage.flac"
+  cp "$TMP/inbox/Image Album/CDImage.cue" "$TMP/inbox/Broken Image/CDImage.cue"
+'
+Q="$TMP/quarantine"
+check "the import still exits 0"               "$LAST_EXIT" "0"
+check "an image becomes one file per track" \
+      "$(cd "$Q/Image Album" && ls *.flac | LC_ALL=C sort | tr '\n' '|')" \
+      "01 Don't Renege on Our Love.flac|02 Walking on a Wire.flac|03 Três.flac|"
+if [ -e "$Q/Image Album/CDImage.flac" ]; then bad "and the image is gone"; else ok "and the image is gone"; fi
+if [ -e "$Q/Image Album/CDImage.cue" ]; then ok "the cue stays, as clutter"; else bad "the cue stays, as clutter"; fi
+t2="$Q/Image Album/02 Walking on a Wire.flac"
+check "tracks are tagged from the cue" \
+      "$(ffprobe -v error -show_entries format_tags=title,album,artist,track -of default=nw=1 "$t2" | sort | tr '\n' '|')" \
+      "TAG:ALBUM=Shoot Out the Lights|TAG:ARTIST=Richard & Linda Thompson|TAG:TITLE=Walking on a Wire|TAG:track=2|"
+dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$t2")"
+if python3 -c "import sys; sys.exit(0 if abs(float('$dur') - 2.0) < 0.1 else 1)"; then
+  ok "cut at INDEX 01, not INDEX 00 ($dur s)"
+else
+  bad "cut at INDEX 01, not INDEX 00 (got $dur s, want 2.0)"
+fi
+check "a cp1252 cue reads correctly" \
+      "$(ffprobe -v error -show_entries format_tags=title -of csv=p=0 "$Q/Image Album/03 Três.flac")" "Três"
+has   "beets was offered the split album"   "$TMP/inbox/Image Album" "$TMP/args.txt"
+check "a per-track rip with a cue is left alone" \
+      "$(cd "$Q/Per Track Rip" && ls | LC_ALL=C sort | tr '\n' '|')" "01 Song.flac|02 Song.flac|03 Song.flac|album.cue|"
+check "as is a one-track cue" \
+      "$(cd "$Q/One Track Cue" && ls | LC_ALL=C sort | tr '\n' '|')" "Single.flac|single.cue|"
+check "a two-disc image set splits each disc in its own folder" \
+      "$(cd "$Q/Two Disc Image" && find . -name '*.flac' | LC_ALL=C sort | tr '\n' '|')" \
+      "./CD1/01 Don't Renege on Our Love.flac|./CD1/02 Walking on a Wire.flac|./CD1/03 Três.flac|./CD2/01 Don't Renege on Our Love.flac|./CD2/02 Walking on a Wire.flac|./CD2/03 Três.flac|"
+check "a failed split leaves the image exactly as it was" \
+      "$(cd "$Q/Broken Image" && ls -A | LC_ALL=C sort | tr '\n' '|')" "CDImage.cue|CDImage.flac|"
+has   "and says so in the log"              "could not split"        "$TMP/import.log"
 
 echo
 echo "an empty inbox is not an event"

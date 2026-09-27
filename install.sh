@@ -237,6 +237,7 @@ deployed_targets() {
   printf '%s\n' /usr/local/bin/autorip.sh
   printf '%s\n' /usr/local/bin/inbox-import.sh
   printf '%s\n' /usr/local/bin/beets-check.sh
+  printf '%s\n' /usr/local/bin/cuesplit.py
   printf '%s\n' /usr/local/bin/beet          # a symlink into $BEETS_VENV
   printf '%s\n' /etc/abcde.conf
   printf '%s\n' "$BEETS_DIR/config.yaml"
@@ -518,6 +519,7 @@ say "scripts:"
 install_file "$REPO/ingest/autorip.sh"      /usr/local/bin/autorip.sh      0755 root:root || true
 install_file "$REPO/ingest/inbox-import.sh" /usr/local/bin/inbox-import.sh 0755 root:root || true
 install_file "$REPO/ingest/beets-check.sh"  /usr/local/bin/beets-check.sh  0755 root:root || true
+install_file "$REPO/ingest/cuesplit.py"     /usr/local/bin/cuesplit.py     0755 root:root || true
 
 say "ripper config:"
 install_file "$REPO/ingest/abcde.conf" /etc/abcde.conf 0644 root:root || true

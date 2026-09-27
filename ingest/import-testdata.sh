@@ -23,6 +23,8 @@ export BEETS_CONFIG="$ROOT/testdata/beets/config-test.yaml"
 export LOG="$ROOT/testdata/logs/inbox-import.log"
 # The harness is never mid-copy; don't sit through the settle loop.
 export SETTLE_SECONDS=0
+# Split CD images with the repo copy, not a deployed one.
+export CUESPLIT="$ROOT/lathe/ingest/cuesplit.py"
 
 for f in "$BEETSDIR/config.yaml" "$BEETS_CONFIG"; do
   [ -f "$f" ] || { echo "error: missing $f" >&2; exit 1; }
