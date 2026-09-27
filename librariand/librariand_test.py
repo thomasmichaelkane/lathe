@@ -1121,6 +1121,33 @@ def run_checks(client, auth, srv: Path):
     truthy("and says how long the oldest has waited", "oldest" in over.text)
     truthy("static assets are served", client.get("/static/style.css").status_code == 200)
 
+    # #32: an icon for the tab and the home screen, all public — a phone
+    # fetches these without the login cookie.
+    for path, ctype in (("/static/icon.svg", "image/svg+xml"),
+                        ("/static/icon-180.png", "image/png"),
+                        ("/static/icon-192.png", "image/png"),
+                        ("/static/icon-512.png", "image/png"),
+                        ("/favicon.ico", "image/png")):
+        r = client.get(path)
+        truthy(f"{path} is served without logging in",
+               r.status_code == 200 and r.headers["content-type"].startswith(ctype))
+    m = client.get("/manifest.webmanifest")
+    check("the manifest is public", m.status_code, 200)
+    truthy("with the manifest content type",
+           m.headers["content-type"].startswith("application/manifest+json"))
+    mj = m.json()
+    truthy("installs standalone, dark", mj["display"] == "standalone"
+           and mj["background_color"] == "#0a0a0a")
+    truthy("with 192 and 512 icons that exist",
+           {"192x192", "512x512"} <= {i["sizes"] for i in mj["icons"]}
+           and all(client.get(i["src"]).status_code == 200 for i in mj["icons"]))
+    for page_path in ("/", "/login"):
+        html = client.get(page_path, headers=auth if page_path == "/" else {}).text
+        truthy(f"{page_path} links the icon, touch icon and manifest",
+               'rel="icon" href="/static/icon.svg?v=' in html
+               and 'rel="apple-touch-icon"' in html
+               and 'rel="manifest" href="/manifest.webmanifest"' in html)
+
     section("no-token mode")
     os.environ["LIBRARIAND_TOKEN"] = ""
     import app as app_mod

@@ -36,7 +36,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -116,6 +117,40 @@ async def _redirect_307(request: Request, exc: HTTPException):
         return RedirectResponse(exc.headers["Location"], status_code=307)
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code,
                         headers=exc.headers)
+
+
+# --------------------------------------------------------------------- icon
+#
+# Public on purpose, like /static: a phone fetches these for its home screen
+# without the login cookie, and the login page needs its icon too (#32).
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Browsers ask for /favicon.ico whatever the page declares. A PNG under
+    # that name is understood everywhere and stops the 404 on every visit.
+    return FileResponse(HERE / "static" / "icon-32.png", media_type="image/png")
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    # Served here rather than as a static file so the type is right and the
+    # icon URLs carry the same cache-buster as everything else.
+    v = templates.env.globals["asset_v"]
+    icons = [{"src": f"/static/icon-{n}.png?v={v}", "sizes": f"{n}x{n}",
+              "type": "image/png", "purpose": "any"} for n in (192, 512)]
+    icons.append({"src": f"/static/icon.svg?v={v}", "sizes": "any",
+                  "type": "image/svg+xml", "purpose": "any"})
+    return JSONResponse({
+        "name": "librariand",
+        "short_name": "librariand",
+        "description": "Quarantine review, fetching and rip history for lathe.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#0a0a0a",
+        "theme_color": "#0a0a0a",
+        "icons": icons,
+    }, media_type="application/manifest+json")
 
 
 @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
