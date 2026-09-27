@@ -966,6 +966,16 @@ def run_checks(client, auth, srv: Path):
 
     resp = client.get("/ui/quarantine", headers=auth)
     truthy("quarantine page offers an ID field", "data-resolve-for" in resp.text)
+    # #33: a browser must not refill these after the post-action reload.
+    truthy("which the browser may not refill after a reload",
+           resp.text.count('autocomplete="off"') >= resp.text.count("data-resolve-for="))
+    fetch_page = client.get("/ui/fetch", headers=auth).text
+    truthy("nor the Fetch tab's link box",
+           'id="link" placeholder="Magnet or .torrent link" autocomplete="off"' in fetch_page)
+    js = client.get("/static/app.js").text
+    truthy("and the dashboard empties a field its action consumed",
+           "if (used) used.value" in js and ", undefined, input)" in js
+           and '"re-imported", input)' in js)
     truthy("beside a single retry button", 'data-action="retry"' in resp.text
            and 'data-action="resolve"' not in resp.text)
     truthy("and the nav carries live counts", 'class="count' in resp.text)

@@ -35,8 +35,13 @@ async function call(method, url, body) {
 /* An action either succeeds and the page no longer reflects reality, or it
  * fails and the page is still right. So: reload on success, restore on
  * failure. No optimistic UI — with file moves, a wrong guess about what
- * happened is worse than a reload. */
-async function act(btn, method, url, body, okMsg) {
+ * happened is worse than a reload.
+ *
+ * `used` is the text field the action consumed, if any. It is emptied on
+ * success — before the reload, because browsers restore typed values across
+ * one — and left alone on failure, so a mistyped link can be corrected
+ * rather than pasted again (#33). */
+async function act(btn, method, url, body, okMsg, used) {
   const card = btn.closest(".card, .group, .tile");
   const label = btn.textContent;
   btn.disabled = true;
@@ -44,6 +49,7 @@ async function act(btn, method, url, body, okMsg) {
   try {
     const data = await call(method, url, body);
     flash(okMsg || data.detail || "done");
+    if (used) used.value = "";
     setTimeout(() => location.reload(), 500);
   } catch (err) {
     flash(err.message, true);
@@ -70,7 +76,7 @@ document.addEventListener("click", (ev) => {
       const identifier = ((input && input.value) || "").trim();
       if (identifier) {
         return act(btn, "POST", `/quarantine/${name}/resolve`, { identifier },
-                   "re-imported");
+                   "re-imported", input);
       }
       return act(btn, "POST", `/quarantine/${name}/retry`, undefined,
                  "moved back to the inbox");
@@ -99,7 +105,7 @@ document.addEventListener("click", (ev) => {
       const input = document.getElementById("link");
       const link = (input.value || "").trim();
       if (!link) { input.focus(); return flash("paste a magnet link or a .torrent URL", true); }
-      return act(btn, "POST", "/torrents", { link });
+      return act(btn, "POST", "/torrents", { link }, undefined, input);
     }
 
     case "move":
