@@ -747,6 +747,25 @@ def run_checks(client, auth, srv: Path):
     check("a Bandcamp URL selects the Bandcamp source", r["source"], "bandcamp")
     truthy("and disables musicbrainz for that pass", "-P musicbrainz" in r["command"])
 
+    # #40: the whole address from musicbrainz.org, as it is actually copied.
+    r = client.post("/quarantine/The Wall (Disc 1)/resolve", headers=auth,
+                    json={"identifier": "https://musicbrainz.org/release/"
+                          "C9B6B2E0-1111-2222-3333-444455556666?tab=tracks",
+                          "dry_run": True}).json()
+    check("a musicbrainz.org release link is accepted", r.get("source"), "musicbrainz")
+    truthy("and beets is given just the ID",
+           "--search-id c9b6b2e0-1111-2222-3333-444455556666 " in r.get("command", ""))
+    r = client.post("/quarantine/The Wall (Disc 1)/resolve", headers=auth,
+                    json={"identifier": "https://musicbrainz.org/release-group/"
+                          "c9b6b2e0-1111-2222-3333-444455556666", "dry_run": True})
+    check("a release-group link is refused", r.status_code, 400)
+    truthy("saying it is the album, not an edition",
+           "release group" in r.json()["detail"] and "/release/" in r.json()["detail"])
+    r = client.post("/quarantine/The Wall (Disc 1)/resolve", headers=auth,
+                    json={"identifier": "https://musicbrainz.org/artist/"
+                          "c9b6b2e0-1111-2222-3333-444455556666", "dry_run": True})
+    check("as is an artist link", r.status_code, 400)
+
     # A real run, against a stub beet that does what beets does on a match:
     # moves the AUDIO out and leaves everything else. The entry holding only
     # an Edition Info.txt and a folder.jpg afterwards used to be reported as
@@ -788,6 +807,8 @@ def run_checks(client, auth, srv: Path):
         d = entry("Unmatched Album")
         r = client.post("/quarantine/Unmatched Album/resolve", headers=auth, json=uuid)
         check("a real non-match is still a 409", r.status_code, 409)
+        truthy("and says to check it is a release, not a release group",
+               "not the release group" in r.json()["detail"])
         truthy("and leaves the entry exactly as it was",
                (d / "01 One.flac").exists() and (d / "folder.jpg").exists())
 

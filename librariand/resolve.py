@@ -42,13 +42,28 @@ BEETS_CONFIG = Path(os.environ.get("BEETS_CONFIG", "/srv/config/beets/config.yam
 # leaves a half-moved album.
 TIMEOUT = int(os.environ.get("RESOLVE_TIMEOUT", "1800"))
 
-UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+UUID_RE = re.compile(rf"^{_UUID}$", re.I)
+
+# Pasting the whole address from musicbrainz.org is the natural thing to do,
+# so it is accepted — but only a /release/ page names one edition. The page
+# search lands you on is the release GROUP, whose UUID looks identical, and
+# beets' --search-id finds no release with it: "did not match", which reads
+# as the album not matching rather than the wrong kind of ID (#40).
+MB_URL_RE = re.compile(
+    rf"^https?://(?:beta\.)?musicbrainz\.org/([a-z-]+)/({_UUID})(?:[/?#].*)?$", re.I
 )
+_MB_WRONG_PAGE = {
+    "release-group": "the album as a whole (a release group)",
+    "recording": "a single recording",
+    "artist": "an artist",
+    "work": "a work",
+    "label": "a label",
+}
 
 
-def classify(identifier: str) -> tuple[str, str]:
-    """Return (kind, plugin_to_disable) for an identifier.
+def classify(identifier: str) -> tuple[str, str, str]:
+    """Return (kind, plugin_to_disable, id_for_beets) for an identifier.
 
     Raises rather than guessing. An identifier that is neither a UUID nor a
     URL would otherwise reach beets as a search string and quietly match
@@ -56,13 +71,24 @@ def classify(identifier: str) -> tuple[str, str]:
     """
     ident = (identifier or "").strip()
     if UUID_RE.match(ident):
-        return "musicbrainz", "bandcamp"
+        return "musicbrainz", "bandcamp", ident.lower()
+    m = MB_URL_RE.match(ident)
+    if m:
+        page, uuid = m.group(1).lower(), m.group(2).lower()
+        if page == "release":
+            return "musicbrainz", "bandcamp", uuid
+        raise QuarantineError(
+            f"that link is to {_MB_WRONG_PAGE.get(page, 'a ' + page + ' page')}, "
+            "not one edition. On MusicBrainz, open the release whose track "
+            "count matches your files and copy its /release/ link or ID."
+        )
     if ident.startswith(("http://", "https://")):
         if "bandcamp.com" not in ident:
             raise QuarantineError(
-                f"only bandcamp.com URLs are understood, got: {ident}"
+                "only musicbrainz.org/release/ and bandcamp.com links are "
+                f"understood, got: {ident}"
             )
-        return "bandcamp", "musicbrainz"
+        return "bandcamp", "musicbrainz", ident
     raise QuarantineError(
         "identifier must be a MusicBrainz release UUID "
         "(e.g. 1a2b3c4d-....-............) or a bandcamp.com album URL, "
@@ -86,7 +112,7 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
     leftovers are deleted, so the card goes with the album.
     """
     path = _resolve_entry(name)          # rejects traversal, checks existence
-    kind, disable = classify(identifier)
+    kind, disable, ident = classify(identifier)
 
     if not BEETS_CONFIG.is_file():
         raise QuarantineError(
@@ -99,7 +125,7 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         )
 
     cmd = [BEET, "-c", str(BEETS_CONFIG), "-P", disable,
-           "import", "--search-id", identifier.strip(), str(path)]
+           "import", "--search-id", ident, str(path)]
 
     if dry_run:
         return {"ok": True, "dry_run": True, "source": kind,
@@ -152,9 +178,10 @@ def resolve(name: str, identifier: str, dry_run: bool = False) -> dict:
         "source": kind,
         "detail": (
             f"beets did not match {name} against that {kind} id. The entry is "
-            f"untouched. Check the id is for the right release, and that the "
-            f"track count matches — a release missing tracks will not match "
-            f"even with a forced id."
+            f"untouched. Check the id is for the right release"
+            + (" — a /release/ ID, not the release group's" if kind == "musicbrainz" else "")
+            + " — and that the track count matches: a release missing tracks "
+            "will not match even with a forced id."
         ),
         "output": output.strip(),
     }
