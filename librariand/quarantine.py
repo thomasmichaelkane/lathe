@@ -50,7 +50,8 @@ RIP_LOGS = Path(os.environ.get("RIP_LOGS", "/srv/logs/rips"))
 # album it skipped, one JSON per entry name.
 MATCHES = Path(os.environ.get("MATCHES", "/srv/logs/matches"))
 
-AUDIO_SUFFIXES = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wv", ".ape"}
+AUDIO_SUFFIXES = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wv", ".ape",
+                  ".aiff", ".aif"}
 
 # MusicBrainz asks for a real contact in the User-Agent and allows one request
 # per second. Both are conditions of use, not suggestions.

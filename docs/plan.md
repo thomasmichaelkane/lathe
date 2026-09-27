@@ -34,7 +34,7 @@ A self-hosted music library on a Raspberry Pi, with automatic CD ripping and a c
 | Rip pipeline | **On the host, not in Docker** | udev + device access in containers is more pain than it's worth |
 | Ripper | **abcde**, paranoia relaxed | "Fast and hands-off" was the stated priority |
 | Rip → library hand-off | **Atomic move into `/srv/inbox/`** | The ripper produces, `inbox-import.sh` consumes. One ingest pipeline, not two — §6.2 |
-| Archive format | **FLAC (-5)** | Lossless master. Transcode on the fly for mobile. |
+| Archive format | **FLAC (-5)** | Lossless master. Transcode on the fly for mobile. Other lossless formats (APE, WavPack, WAV, AIFF) are converted to FLAC on import; lossy files are kept exactly as they arrive — §6.3 |
 | Tagger | **beets**, non-interactive | MusicBrainz matching, art, ReplayGain, consistent naming |
 | Unmatched albums | **Left in the inbox → swept to quarantine** | Never let a bad match pollute the library |
 | Remote access | **Tailscale** | No open ports, 10-minute setup, works on Android |
@@ -365,6 +365,7 @@ section keeps referring to:
 | `fetchart.filename: cover` | One `cover.jpg` per album |
 | `zero:` with unanchored patterns and plural fields | Strips bandcamp.com URLs out of MusicBrainz ID tags |
 | `statefile:` | Pinned under `/srv/config/beets`, next to `library.db` |
+| `convert:` with a negated `no_convert` format query | APE/WavPack/WAV/AIFF become FLAC on import; FLAC and every lossy format are untouched. Not `never_convert_lossy_files`, which would skip WavPack (#58) |
 
 **`quiet_fallback: skip` is the critical line.** Anything beets isn't confident about is left where it is rather than guessed at. `inbox-import.sh` then sweeps what it declined into `/srv/quarantine/` for later review — one sweep, covering rips and manual drops alike, because by this point they are indistinguishable (§6.5).
 

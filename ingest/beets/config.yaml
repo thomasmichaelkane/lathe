@@ -51,7 +51,7 @@ match:
 # 'bandcamp' (beetcamp) is not optional for a download-based collection:
 # Bandcamp edits, bootlegs and unofficial remixes are largely absent from
 # MusicBrainz and can never match without it.
-plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url quarantine_match
+plugins: musicbrainz bandcamp fetchart replaygain scrub lastgenre missing edit inline zero bandcamp_url quarantine_match convert
 
 # Local plugin dir. beets resolves pluginpath against the CWD, not the config
 # directory, so it must be absolute — the test overlay replaces this the same
@@ -93,6 +93,37 @@ replaygain:
 
 scrub:
   auto: yes
+
+# Lossless formats that players cannot open become FLAC on import (#58).
+#
+# APE, WavPack, WAV and AIFF import fine, but Navidrome streams the original
+# unless a client asks for a transcode, and browsers and Android's player
+# cannot decode APE or WavPack — so "original quality" playback of those
+# albums failed. Lossless to lossless loses nothing. Lossy files are NOT
+# touched: accepting MP3 as it arrives is the format policy, and re-encoding
+# lossy would be a generational loss.
+#
+# `auto` runs as an early import stage, on albums beets ACCEPTS: it encodes a
+# temporary FLAC and points the item at it, so the normal move files the FLAC
+# into the library, and delete_originals removes the source — leaving the
+# inbox folder with no audio, which the sweep clears. A quarantined album is
+# left exactly as it arrived.
+#
+# LOAD-BEARING: `no_convert` is a NEGATED query naming exactly what converts.
+# Not never_convert_lossy_files — the plugin's own lossless list is
+# ape/flac/alac/wave/aiff, so WavPack counts as lossy there and would silently
+# never convert. Format names are mediafile's: APE, WavPack, WAVE, AIFF.
+#
+# tmpdir on the library drive, not /tmp: /tmp is RAM on the Pi, and a hi-res
+# album could fill it — a failed encode just keeps the original, silently.
+# install.sh creates the directory; the test overlay replaces it.
+convert:
+  auto: yes
+  format: flac
+  no_convert: '^format::(?i)^(ape|wavpack|wave|aiff)$'
+  delete_originals: yes
+  tmpdir: /srv/staging/convert
+  quiet: yes
 
 # What beets thought of each album it skipped: best candidate, similarity and
 # penalties, per metadata source, one JSON per quarantine entry. librariand's

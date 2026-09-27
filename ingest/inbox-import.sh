@@ -153,7 +153,7 @@ done
 has_audio() {
   [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.mp3' -o -iname '*.m4a' \
       -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.wav' -o -iname '*.wv' \
-      -o -iname '*.ape' \) -print -quit)" ]
+      -o -iname '*.ape' -o -iname '*.aiff' -o -iname '*.aif' \) -print -quit)" ]
 }
 
 # SNAPSHOT what this run is responsible for, and touch nothing else.

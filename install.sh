@@ -426,6 +426,7 @@ for d in \
   "$SRV/staging/fetched" \
   "$SRV/staging/incoming" \
   "$SRV/staging/torrents" \
+  "$SRV/staging/convert" \
   "$SRV/config/navidrome" \
   "$SRV/config/aria2" \
   "$SRV/config/gluetun" \
