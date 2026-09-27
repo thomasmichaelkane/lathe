@@ -202,6 +202,7 @@ ul.notes li { margin: 2px 0; }
 .tile { position: relative; }
 .tile.stuck { background: #1f1a0e; border-color: #5a4320; border-left: 3px solid var(--warn); }
 .tile.stuck .n { color: var(--warn); }
+.tile.importing .n { color: var(--acid); }
 .tile .nudge {
   position: absolute; top: 8px; right: 8px;
   min-height: 0; padding: 7px; line-height: 0;

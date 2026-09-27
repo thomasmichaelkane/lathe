@@ -241,7 +241,8 @@ async def api_reject(fetch_id: str, dry_run: bool = False):
 
 @app.get("/inbox", dependencies=[Depends(require_api)])
 async def api_inbox():
-    return {"entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
+    return {"importing": system._unit_active("inbox-import.service") is True,
+            "entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
 
 class LinkBody(BaseModel):
@@ -353,9 +354,15 @@ def ui_index(request: Request):
     # the importer. That is one tile on the overview.
     items = inbox_mod.entries()
     oldest = round(items[0].age_seconds / 60) if items else None
+    # Items stay in the inbox until beets reaches them, so a 30-album batch
+    # sits here for an hour while inbox-import.service works through it.
+    # That is not stuck (#29). Stuck is: old, and nothing importing.
+    importing = bool(items) and system._unit_active("inbox-import.service") is True
+    stuck = bool(items) and not importing and any(i.stale for i in items)
     return _page(request, "index.html",
                  health=system.health(), stats=system.stats(),
-                 inbox_oldest_min=oldest, vpn=torrents.vpn(),
+                 inbox_oldest_min=oldest, inbox_importing=importing,
+                 inbox_stuck=stuck, vpn=torrents.vpn(),
                  nav="overview")
 
 

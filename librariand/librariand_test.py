@@ -1045,8 +1045,40 @@ def run_checks(client, auth, srv: Path):
     truthy("and no top-artists table", "Most albums" not in over.text)
     truthy("there is no inbox tab", '/ui/inbox' not in over.text)
     check("or inbox page", client.get("/ui/inbox", headers=auth).status_code, 404)
-    truthy("a non-empty inbox turns its tile", 'class="tile stuck"' in over.text)
-    truthy("which offers the nudge", 'data-action="nudge"' in over.text)
+    # #29: only old AND idle is stuck. The fixture's inbox items are fresh.
+    truthy("a freshly arrived item is not called stuck",
+           'class="tile stuck"' not in over.text)
+    truthy("but still offers the nudge", 'data-action="nudge"' in over.text)
+
+    import inbox as inbox_mod
+    real_stale = inbox_mod.STALE_SECONDS
+    inbox_mod.STALE_SECONDS = -1
+    try:
+        over = client.get("/", headers=auth)
+        truthy("an old item with no import running is stuck",
+               'class="tile stuck"' in over.text)
+        truthy("and offers the nudge", 'data-action="nudge"' in over.text)
+
+        importing = srv.parent / "bin" / "systemctl-importing"
+        importing.write_text("#!/bin/sh\necho active\n")
+        importing.chmod(0o755)
+        real_sc = os.environ["SYSTEMCTL"]
+        os.environ["SYSTEMCTL"] = str(importing)
+        try:
+            over = client.get("/", headers=auth)
+            api = client.get("/inbox", headers=auth).json()
+        finally:
+            os.environ["SYSTEMCTL"] = real_sc
+        truthy("the same item while the importer runs is importing, not stuck",
+               'class="tile importing"' in over.text
+               and 'class="tile stuck"' not in over.text)
+        truthy("says so", "· importing" in over.text)
+        truthy("and does not offer a nudge that would do nothing",
+               'data-action="nudge"' not in over.text)
+        truthy("the API says it is importing too", api["importing"] is True)
+    finally:
+        inbox_mod.STALE_SECONDS = real_stale
+    over = client.get("/", headers=auth)
     truthy("and says how long the oldest has waited", "oldest" in over.text)
     truthy("static assets are served", client.get("/static/style.css").status_code == 200)
 
