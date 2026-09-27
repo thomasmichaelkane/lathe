@@ -432,6 +432,19 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
     truthy("the page offers the + button", 'data-action="add-open"' in page)
     truthy("and polls while it is active", 'data-active="1"' in page)
     truthy("and says what it is doing", "Finding the torrent" in page)
+    # #36: nothing ready, one in progress — the badge says so, quietly.
+    # Earlier checks leave farfetchd entries in staging/fetched, which count
+    # as ready; point that at an empty directory so this sees only torrents.
+    import fetched as fetched_mod
+    real_fetched = fetched_mod.FETCHED
+    fetched_mod.FETCHED = srv.parent / "no-fetched"
+    try:
+        badge_page = client.get("/ui/fetch", headers=auth).text
+    finally:
+        fetched_mod.FETCHED = real_fetched
+    truthy("the Fetch badge shows a download in progress, not 0",
+           'class="count zero" id="fetch-count"' in badge_page and "↓1<" in badge_page)
+    check("counted from disk", torrents_mod.active_count(), 1)
 
     aria2.tick()
     t = listed()["torrents"][0]
@@ -466,8 +479,19 @@ def run_torrent_checks(client, auth, srv: Path, aria2: FakeAria2):
     truthy("the finished card offers the move", 'data-action="move"' in page)
     truthy("and stops polling", 'data-active="1"' not in page)
     check("it counts as ready to move", torrents_mod.ready_count(), 1)
+    check("and no longer as in progress", torrents_mod.active_count(), 0)
+    fetched_mod.FETCHED = srv.parent / "no-fetched"
+    try:
+        page = client.get("/ui/fetch", headers=auth).text
+    finally:
+        fetched_mod.FETCHED = real_fetched
+    truthy("the badge turns bright once it is ready",
+           '<span class="count" id="fetch-count">1</span>' in page)
+    js = client.get("/static/app.js").text
+    truthy("and the Fetch tab's poll keeps the badge live",
+           'getElementById("fetch-count")' in js)
     truthy("in the Fetch nav badge", re.search(
-        r'href="/ui/fetch"[^>]*>Fetch\s*<span class="count ?">(\d+)', page) is not None)
+        r'href="/ui/fetch"[^>]*>Fetch\s*(?:\{#.*?#\}\s*)?<span class="count ?"[^>]*>(\d+)', page, re.S) is not None)
 
     section("fetch — moving")
     r = client.post(f"/torrents/{tid}/move", headers=auth).json()

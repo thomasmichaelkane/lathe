@@ -171,6 +171,11 @@ async function pollTorrents() {
     const fresh = doc.getElementById("torrents");
     // Never swap a card out from under a click in progress.
     if (fresh && !list.querySelector(".spin")) list.replaceWith(fresh);
+    // The nav badge is rendered once per page; without this, a download
+    // finishing while you watch leaves it wrong until a reload (#36).
+    const badge = document.getElementById("fetch-count");
+    const freshBadge = doc.getElementById("fetch-count");
+    if (badge && freshBadge) badge.replaceWith(freshBadge);
   } catch { /* offline for a moment; try again next tick */ }
   setTimeout(pollTorrents, 3000);
 }

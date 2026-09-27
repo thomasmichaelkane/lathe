@@ -331,6 +331,21 @@ def ready_count() -> int:
     return n
 
 
+def active_count() -> int:
+    """Not finished yet, from disk alone: still fetching metadata (nothing
+    but the record) or partway through (a `.aria2` control file). Includes a
+    stalled one — from the badge's point of view it is still in progress,
+    which is the point: a zero beside four visible downloads read as broken
+    (#36)."""
+    if not TORRENTS.is_dir():
+        return 0
+    n = 0
+    for d in TORRENTS.iterdir():
+        if d.is_dir() and ID_RE.match(d.name) and (not _payload(d) or _unfinished(d)):
+            n += 1
+    return n
+
+
 # --- actions --------------------------------------------------------------
 
 def parse_link(link: str) -> tuple[str, str | None]:
