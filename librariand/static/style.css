@@ -147,6 +147,7 @@ h2.section:first-child { margin-top: 4px; }
   letter-spacing: 0.12em; text-transform: uppercase; padding-top: 2px;
 }
 .verdict dd { margin: 0; overflow-wrap: anywhere; }
+.verdict dd .of { color: var(--ink-dim); }
 .missing { color: var(--alarm); font-weight: 700; }
 
 .verdict .score {

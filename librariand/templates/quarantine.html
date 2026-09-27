@@ -26,10 +26,15 @@
       <dt>Album</dt><dd>{{ val(b.album if b else None) }}</dd>
       <dt>Year</dt><dd>{{ val(b.year if b else None) }}</dd>
       <dt>Label</dt><dd>{{ val(b.label if b else None) }}</dd>
+      {# From your files' side: "28 of your 70 files fit" says what
+         "28 of 28" hid (#38). #}
+      {% set f = c.fit %}
       <dt>Tracks</dt>
-      <dd>{% if b %}{{ b.matched_tracks }} of {{ b.tracks }}
-        {%- if b.missing_tracks %} <span class="missing">{{ b.missing_tracks }} missing</span>{% endif %}
-        {%- if b.extra_items %} <span class="missing">{{ b.extra_items }} unmatched file{{ '' if b.extra_items == 1 else 's' }}</span>{% endif %}
+      <dd>{% if f %}
+        {%- if f.extra %}<span class="missing">{{ f.fit }} of your {{ f.files }} files fit</span>
+        {%- else %}{{ f.fit }} of your {{ f.files }} file{{ '' if f.files == 1 else 's' }} fit{% endif %}
+        <span class="of">· release has {{ f.release }}</span>
+        {%- if f.missing %} <span class="missing">{{ f.missing }} missing</span>{% endif %}
         {%- else %}{{ val(None) }}{% endif %}</dd>
       {% if b and b.penalties %}
       <dt>Lost on</dt><dd>{{ b.penalties|join(", ") }}</dd>
@@ -49,6 +54,13 @@
       {% endif %}
     </div>
   </div>
+
+  {% if c.fit and c.fit.oversized %}
+  <p class="why bad">{{ c.fit.extra }} of your files have no place on this release —
+    usually a bigger edition, bonus discs, or two copies in one folder, so a
+    plain retry will land here again. Paste the ID of the release with
+    {{ c.fit.files }} tracks, or split the folder and retry each part.</p>
+  {% endif %}
 
   {% if c.group %}
   <div class="actions">
