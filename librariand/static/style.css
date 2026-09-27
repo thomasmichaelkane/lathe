@@ -298,7 +298,7 @@ table.log tr:hover td { background: var(--surface); }
   background: var(--acid); color: #000;
   transform: translateY(105%);
 }
-#flash.show { transform: translateY(0); }
+#flash.show { transform: translateY(0); cursor: pointer; }
 #flash.bad { background: var(--alarm); color: #fff; }
 
 .spin { opacity: 0.45; pointer-events: none; }
