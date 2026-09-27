@@ -67,7 +67,7 @@ echo
 echo "the §4 tree it plans to create"
 
 run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
-for d in music inbox quarantine staging/rips staging/fetched staging/incoming \
+for d in music inbox quarantine staging/rips staging/fetched staging/incoming staging/convert \
          config/navidrome config/beets config/librariand logs/rips; do
   has "plans $d" "WOULD CREATE  $SRV/$d" "$OUT"
 done
@@ -79,7 +79,7 @@ echo
 echo "it is idempotent"
 
 mkdir -p "$SRV"/{music,inbox,quarantine} \
-         "$SRV"/staging/{rips,fetched,incoming,torrents} \
+         "$SRV"/staging/{rips,fetched,incoming,torrents,convert} \
          "$SRV"/config/{navidrome,beets,librariand,aria2,gluetun} \
          "$SRV"/logs/rips
 run SRV="$SRV" MUSIC_USER="$(id -un)" ALLOW_UNMOUNTED_SRV=1
@@ -166,7 +166,7 @@ cp "$OUT" "$TMP/uninstall-plan.txt"
 is_left_alone() {
   case "$1" in
     "$SRV/music"|"$SRV/inbox"|"$SRV/quarantine") return 0 ;;
-    "$SRV/staging/rips"|"$SRV/staging/fetched"|"$SRV/staging/incoming"|"$SRV/staging/torrents") return 0 ;;
+    "$SRV/staging/rips"|"$SRV/staging/fetched"|"$SRV/staging/incoming"|"$SRV/staging/torrents"|"$SRV/staging/convert") return 0 ;;
     "$SRV/config/navidrome"|"$SRV/config/beets"|"$SRV/config/librariand"|"$SRV/config/aria2"|"$SRV/config/gluetun") return 0 ;;
     "$SRV/logs/rips") return 0 ;;
     /etc/default/lathe|/etc/lathe/secrets|/etc/lathe/secrets/*) return 0 ;;
