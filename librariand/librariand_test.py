@@ -108,8 +108,11 @@ def build_srv(srv: Path) -> None:
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "config.yaml").write_text("directory: /srv/music\n", encoding="utf-8")
 
-    # The library, for stats.
-    for artist, albums in [("Pink Floyd", ["Animals", "Meddle"]), ("Karenn", ["Grapefruit Regret"])]:
+    # The library, for stats. Karenn's is a two-disc set, filed the way the
+    # beets multidisc template files one: a folder per disc. Still one album.
+    for artist, albums in [("Pink Floyd", ["Animals", "Meddle"]),
+                           ("Karenn", ["Grapefruit Regret (Disc 01)",
+                                       "Grapefruit Regret (Disc 02)"])]:
         for alb in albums:
             (music / artist / alb).mkdir(parents=True, exist_ok=True)
             (music / artist / alb / "01 Track.flac").write_bytes(b"x" * 64)
@@ -622,6 +625,8 @@ def run_checks(client, auth, srv: Path):
     section("stats")
     s = client.get("/stats", headers=auth).json()
     check("counts albums from the library layout", s["albums"], 3)
+    check("a set filed one folder per disc is one album",
+          next(a["albums"] for a in s["top_artists"] if a["artist"] == "Karenn"), 1)
     check("counts artists", s["artists"], 2)
     check("counts rips", s["rips_total"], 5)
     check("ranks artists by album count", s["top_artists"][0]["artist"], "Pink Floyd")
