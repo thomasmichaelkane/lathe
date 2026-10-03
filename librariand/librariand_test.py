@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 TOKEN = "test-token-1948"
@@ -969,6 +970,62 @@ def run_checks(client, auth, srv: Path):
         truthy("because beets recorded none", "no release to accept" in r.json()["detail"])
     finally:
         resolve_mod.BEET = real_beet
+
+    # #64: an import takes minutes, and used to take the whole site down with
+    # it. A stub beet that holds until released stands in for the minutes.
+    # `with` gives the client ONE event loop for all its requests, as uvicorn
+    # has; a bare TestClient starts a loop per request and cannot see a
+    # blocked one.
+    section("quarantine — a running import")
+    import threading
+    from fastapi.testclient import TestClient as LiveClient
+    started, release = srv.parent / "beet-started", srv.parent / "beet-release"
+    slow = bin_dir / "beet-slow"
+    slow.write_text(
+        "#!/bin/sh\n"
+        "for last; do :; done\n"
+        f": > '{started}'\n"
+        f"i=0; while [ ! -e '{release}' ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done\n"
+        f"mkdir -p '{srv}/music/Slow'\n"
+        f"find \"$last\" -name '*.flac' -exec mv {{}} '{srv}/music/Slow/' \\;\n")
+    slow.chmod(0o755)
+    d = entry("Slow Album")
+    resolve_mod.BEET = str(slow)
+    try:
+        with LiveClient(client.app) as live:
+            first = {}
+            t = threading.Thread(target=lambda: first.update(r=live.post(
+                "/quarantine/Slow Album/resolve", headers=auth, json=uuid)))
+            t.start()
+            deadline = time.time() + 5
+            while not started.exists() and time.time() < deadline:
+                time.sleep(0.02)
+            truthy("the import is under way", started.exists() and t.is_alive())
+
+            r = live.get("/health", headers=auth)
+            truthy("the site still answers while beets runs",
+                   r.status_code == 200 and t.is_alive())
+            page = live.get("/ui/quarantine", headers=auth).text
+            card = page[:page.index("<h3>Slow Album</h3>")].rsplit("<div", 1)[1]
+            truthy("the page marks the card as importing", "spin" in card)
+
+            r = live.post("/quarantine/Slow Album/resolve", headers=auth, json=uuid)
+            truthy("a second resolve of the same album is refused",
+                   r.status_code == 409 and "already being imported" in r.json()["detail"])
+            r = live.delete("/quarantine/Slow Album", headers=auth)
+            check("so is deleting it mid-import", r.status_code, 409)
+            r = live.post("/quarantine/Slow Album/retry", headers=auth)
+            check("and moving it back to the inbox", r.status_code, 409)
+            truthy("its files are left to beets", (d / "01 One.flac").exists())
+
+            release.write_text("")
+            t.join(10)
+            check("the import then finishes", first["r"].status_code, 200)
+            check("and the card goes", d.exists(), False)
+            check("leaving nothing marked as importing", resolve_mod.busy(), set())
+    finally:
+        resolve_mod.BEET = real_beet
+        release.write_text("")
 
     section("fetched")
     f = client.get("/fetched", headers=auth).json()["entries"]
