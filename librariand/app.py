@@ -263,24 +263,39 @@ class EjectBody(BaseModel):
 
 
 # ---------------------------------------------------------------- JSON API
+#
+# Plain `def`, not `async def`, wherever a route touches the disk, a
+# subprocess or the network. FastAPI runs a plain function in a worker thread;
+# an `async def` runs on the one event loop, and a beets import inside it
+# stopped every other request for as long as it ran — minutes (#64).
+
+def _importing(*names: str):
+    """A 409 if any of these entries is mid-import, else None. beets is
+    moving their files; nothing else may move or delete them meanwhile."""
+    held = sorted(set(names) & resolve_mod.busy())
+    if not held:
+        return None
+    return _fail(resolve_mod.ImportBusy(
+        f"{', '.join(held)} is being imported right now — wait for it to finish"), 409)
+
 
 @app.get("/health", dependencies=[Depends(require_api)])
-async def api_health():
+def api_health():
     return system.health()
 
 
 @app.get("/stats", dependencies=[Depends(require_api)])
-async def api_stats(force: bool = False):
+def api_stats(force: bool = False):
     return system.stats(force=force)
 
 
 @app.get("/quarantine", dependencies=[Depends(require_api)])
-async def api_quarantine():
+def api_quarantine():
     return {"entries": [asdict(e) for e in quarantine.entries()]}
 
 
 @app.get("/quarantine/groups", dependencies=[Depends(require_api)])
-async def api_groups(online: bool = False):
+def api_groups(online: bool = False):
     # `online` hits the MusicBrainz disc-ID lookup, which is rate limited to
     # roughly one request a second and is therefore never the default.
     gs = quarantine.groups(online=online)
@@ -289,7 +304,9 @@ async def api_groups(online: bool = False):
 
 @app.post("/quarantine/merge", dependencies=[Depends(require_api)])
 @_logged("merge")
-async def api_merge(body: MergeBody):
+def api_merge(body: MergeBody):
+    if (held := _importing(*body.entries)) and not body.dry_run:
+        return held
     try:
         return {"ok": True, "detail": quarantine.merge(
             body.entries, album=body.album, dry_run=body.dry_run)}
@@ -299,7 +316,9 @@ async def api_merge(body: MergeBody):
 
 @app.post("/quarantine/{name}/retry", dependencies=[Depends(require_api)])
 @_logged("retry")
-async def api_retry(name: str, dry_run: bool = False):
+def api_retry(name: str, dry_run: bool = False):
+    if (held := _importing(name)) and not dry_run:
+        return held
     try:
         return {"ok": True, "detail": quarantine.retry([name], dry_run=dry_run)}
     except quarantine.QuarantineError as exc:
@@ -308,9 +327,11 @@ async def api_retry(name: str, dry_run: bool = False):
 
 @app.post("/quarantine/{name}/resolve", dependencies=[Depends(require_api)])
 @_logged("resolve")
-async def api_resolve(name: str, body: ResolveBody):
+def api_resolve(name: str, body: ResolveBody):
     try:
         result = resolve_mod.resolve(name, body.identifier, dry_run=body.dry_run)
+    except resolve_mod.ImportBusy as exc:
+        return _fail(exc, 409)
     except quarantine.QuarantineError as exc:
         return _fail(exc)
     return result if result.get("ok") else JSONResponse(result, status_code=409)
@@ -318,7 +339,7 @@ async def api_resolve(name: str, body: ResolveBody):
 
 @app.post("/quarantine/{name}/accept", dependencies=[Depends(require_api)])
 @_logged("accept")
-async def api_accept(name: str, dry_run: bool = False):
+def api_accept(name: str, dry_run: bool = False):
     # "Allow anyway" (#55): the release beets tried, despite its score. What
     # may be accepted is decided in resolve.acceptable(), not here.
     try:
@@ -330,11 +351,13 @@ async def api_accept(name: str, dry_run: bool = False):
 
 @app.delete("/quarantine/{name}", dependencies=[Depends(require_api)])
 @_logged("delete")
-async def api_drop(name: str):
+def api_drop(name: str):
     # No dry_run: quarantine.drop() has no such flag, and inventing one here
     # would mean a second deletion path. The confirmation lives in the UI,
     # which is where a human is; `yes=True` is this layer asserting that a
     # DELETE request is already the confirmation.
+    if held := _importing(name):
+        return held
     try:
         return {"ok": True, "detail": quarantine.drop([name], yes=True)}
     except quarantine.QuarantineError as exc:
@@ -342,13 +365,13 @@ async def api_drop(name: str):
 
 
 @app.get("/fetched", dependencies=[Depends(require_api)])
-async def api_fetched():
+def api_fetched():
     return {"entries": [asdict(e) | {"clean": e.clean} for e in fetched.entries()]}
 
 
 @app.post("/fetched/{fetch_id}/approve", dependencies=[Depends(require_api)])
 @_logged("approve")
-async def api_approve(fetch_id: str, dry_run: bool = False):
+def api_approve(fetch_id: str, dry_run: bool = False):
     try:
         return {"ok": True, "detail": fetched.approve(fetch_id, dry_run=dry_run)}
     except fetched.FetchedError as exc:
@@ -357,7 +380,7 @@ async def api_approve(fetch_id: str, dry_run: bool = False):
 
 @app.post("/fetched/{fetch_id}/reject", dependencies=[Depends(require_api)])
 @_logged("reject")
-async def api_reject(fetch_id: str, dry_run: bool = False):
+def api_reject(fetch_id: str, dry_run: bool = False):
     try:
         return {"ok": True, "detail": fetched.reject(fetch_id, dry_run=dry_run)}
     except fetched.FetchedError as exc:
@@ -365,7 +388,7 @@ async def api_reject(fetch_id: str, dry_run: bool = False):
 
 
 @app.get("/inbox", dependencies=[Depends(require_api)])
-async def api_inbox():
+def api_inbox():
     return {"importing": system._unit_active("inbox-import.service") is True,
             "entries": [asdict(i) | {"stale": i.stale} for i in inbox_mod.entries()]}
 
@@ -422,7 +445,7 @@ def api_torrent_cancel(tid: str):
 
 @app.post("/inbox/nudge", dependencies=[Depends(require_api)])
 @_logged("inbox nudge")
-async def api_inbox_nudge():
+def api_inbox_nudge():
     # With the watcher down a nudge fires nothing, and saying "started" would
     # be a lie. Fixing that needs root, so say what to run instead. None means
     # systemctl could not be asked — try anyway rather than refuse.
@@ -439,7 +462,7 @@ async def api_inbox_nudge():
 
 
 @app.get("/rips", dependencies=[Depends(require_api)])
-async def api_rips():
+def api_rips():
     # `passed` and `needs_attention` are properties, so asdict() does not carry
     # them. They are the two things a caller actually wants, so add them rather
     # than making every client re-derive them from `status` and `read_errors`.
@@ -451,7 +474,7 @@ async def api_rips():
 
 @app.post("/eject", dependencies=[Depends(require_api)])
 @_logged("eject")
-async def api_eject(body: EjectBody | None = None):
+def api_eject(body: EjectBody | None = None):
     try:
         return {"ok": True, "detail": rips.eject((body or EjectBody()).device)}
     except rips.RipError as exc:
@@ -582,7 +605,7 @@ def _score_css(best: dict | None) -> str:
 
 @app.get("/ui/quarantine", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
-async def ui_quarantine(request: Request):
+def ui_quarantine(request: Request):
     # Merge acts on a whole set, so each member card carries the action for its
     # group. Keeps the list flat without losing the one operation that needs to
     # know about more than one entry at a time.
@@ -592,13 +615,17 @@ async def ui_quarantine(request: Request):
             for member in g.members:
                 group_of[member] = g
 
+    # Mid-import cards stay on the page, inert: a reload or a second tab must
+    # not offer Retry or Delete on files beets is in the middle of moving.
+    busy = resolve_mod.busy()
+
     cards = []
     for e in quarantine.entries():
         best = (e.match or {}).get("best")
         fit = _fit(e, best)
         css, label, rank = _issue(e)
         cards.append({"e": e, "css": css, "label": label, "rank": rank,
-                      "group": group_of.get(e.name),
+                      "group": group_of.get(e.name), "busy": e.name in busy,
                       "title": _card_title(e),
                       "best": best, "fit": fit,
                       "can_accept": resolve_mod.acceptable(best) is None,
@@ -624,7 +651,7 @@ async def ui_fetched_moved():
 
 @app.get("/ui/rips", response_class=HTMLResponse, include_in_schema=False,
          dependencies=[Depends(require_page)])
-async def ui_rips(request: Request):
+def ui_rips(request: Request):
     return _page(request, "rips.html", entries=rips.entries(),
                  current=rips.current(), nav="rips")
 

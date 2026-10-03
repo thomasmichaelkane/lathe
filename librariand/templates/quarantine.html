@@ -16,8 +16,9 @@
 
 {% for c in cards %}
 {% set b = c.best %}
-<div class="card {{ c.css }}">
+<div class="card {{ c.css }}{% if c.busy %} spin{% endif %}">
   <h3>{{ c.title }}</h3>
+  {% if c.busy %}<p class="why">Importing now. This takes a few minutes; reload to see the result.</p>{% endif %}
 
   <div class="verdict">
     {# What beets thought this was: its best candidate across both passes. #}

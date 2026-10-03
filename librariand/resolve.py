@@ -30,6 +30,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from quarantine import (QUARANTINE, QuarantineError, _audio_paths,
@@ -75,6 +77,56 @@ _MB_WRONG_PAGE = {
     "work": "a work",
     "label": "a label",
 }
+
+
+class ImportBusy(QuarantineError):
+    """The entry is already being imported."""
+
+
+# One beets import at a time (#64). The routes run in worker threads, so two
+# resolves can now overlap, and two beets processes writing library.db at once
+# is a "database is locked" waiting to happen on a Pi. A second album waits
+# its turn; the SAME album a second time is refused outright, because the
+# first run is about to move its files out from under the second.
+_import_lock = threading.Lock()
+_busy: set[str] = set()
+_busy_guard = threading.Lock()
+
+
+def busy() -> set[str]:
+    """Entries being imported right now, or waiting their turn."""
+    with _busy_guard:
+        return set(_busy)
+
+
+@contextmanager
+def _importing(name: str):
+    with _busy_guard:
+        if name in _busy:
+            raise ImportBusy(
+                f"{name} is already being imported. It leaves this page when "
+                "it is done; reload to check."
+            )
+        _busy.add(name)
+    try:
+        with _import_lock:
+            yield
+    finally:
+        with _busy_guard:
+            _busy.discard(name)
+
+
+@contextmanager
+def _discarded(overlay: str | None):
+    """Remove the accept overlay on the way out, however that happens."""
+    try:
+        yield
+    finally:
+        if overlay:
+            try:
+                os.unlink(overlay)
+            except OSError:
+                pass
 
 
 def classify(identifier: str) -> tuple[str, str, str]:
@@ -162,67 +214,62 @@ def resolve(name: str, identifier: str, dry_run: bool = False,
         return {"ok": True, "dry_run": True, "source": kind, "id": ident,
                 "command": " ".join(cmd), "detail": "nothing was run"}
 
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=TIMEOUT, env=env)
-    except subprocess.TimeoutExpired:
-        raise QuarantineError(
-            f"beets did not finish within {TIMEOUT}s. It may still be running; "
-            f"check the entry before retrying."
-        ) from None
-    except OSError as exc:
-        raise QuarantineError(f"could not run beets: {exc}") from None
-    finally:
-        if overlay:
-            try:
-                os.unlink(overlay)
-            except OSError:
-                pass
+    with _discarded(overlay), _importing(name):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=TIMEOUT, env=env)
+        except subprocess.TimeoutExpired:
+            raise QuarantineError(
+                f"beets did not finish within {TIMEOUT}s. It may still be running; "
+                f"check the entry before retrying."
+            ) from None
+        except OSError as exc:
+            raise QuarantineError(f"could not run beets: {exc}") from None
 
-    output = (proc.stdout or "") + (proc.stderr or "")
+        output = (proc.stdout or "") + (proc.stderr or "")
 
-    # A network failure is not an import failure to beets: it logs, skips, and
-    # exits 0. Under a forced-id import that means "could not reach the source"
-    # and "the id did not match" look identical from the exit code alone. Same
-    # trap inbox-import.sh guards against between its two passes.
-    unreachable = re.search(
-        r"musicbrainz: Error|Max retries exceeded|Read timed out", output, re.I
-    )
-
-    entry = QUARANTINE / name
-    if not (entry.exists() and _audio_paths(entry)):
-        leftovers = []
-        if entry.is_dir():
-            leftovers = sorted(str(p.relative_to(entry))
-                               for p in entry.rglob("*") if p.is_file())
-            shutil.rmtree(entry, ignore_errors=True)
-        elif entry.exists():
-            entry.unlink()
-        detail = "imported"
-        if leftovers:
-            detail += f" — cleared {len(leftovers)} leftover file(s): " + \
-                      ", ".join(leftovers[:5]) + (" …" if len(leftovers) > 5 else "")
-        return {"ok": True, "source": kind, "detail": detail,
-                "output": output.strip()}
-
-    if unreachable:
-        raise QuarantineError(
-            f"could not reach {kind} — the entry was left untouched. "
-            f"Try again when it is back."
+        # A network failure is not an import failure to beets: it logs, skips,
+        # and exits 0. Under a forced-id import that means "could not reach the
+        # source" and "the id did not match" look identical from the exit code
+        # alone. Same trap inbox-import.sh guards against between its two passes.
+        unreachable = re.search(
+            r"musicbrainz: Error|Max retries exceeded|Read timed out", output, re.I
         )
 
-    return {
-        "ok": False,
-        "source": kind,
-        "detail": (
-            f"beets did not match {name} against that {kind} id. The entry is "
-            f"untouched. Check the id is for the right release"
-            + (" — a /release/ ID, not the release group's" if kind == "musicbrainz" else "")
-            + " — and that the track count matches: a release missing tracks "
-            "will not match even with a forced id."
-        ),
-        "output": output.strip(),
-    }
+        entry = QUARANTINE / name
+        if not (entry.exists() and _audio_paths(entry)):
+            leftovers = []
+            if entry.is_dir():
+                leftovers = sorted(str(p.relative_to(entry))
+                                   for p in entry.rglob("*") if p.is_file())
+                shutil.rmtree(entry, ignore_errors=True)
+            elif entry.exists():
+                entry.unlink()
+            detail = "imported"
+            if leftovers:
+                detail += f" — cleared {len(leftovers)} leftover file(s): " + \
+                          ", ".join(leftovers[:5]) + (" …" if len(leftovers) > 5 else "")
+            return {"ok": True, "source": kind, "detail": detail,
+                    "output": output.strip()}
+
+        if unreachable:
+            raise QuarantineError(
+                f"could not reach {kind} — the entry was left untouched. "
+                f"Try again when it is back."
+            )
+
+        return {
+            "ok": False,
+            "source": kind,
+            "detail": (
+                f"beets did not match {name} against that {kind} id. The entry is "
+                f"untouched. Check the id is for the right release"
+                + (" — a /release/ ID, not the release group's" if kind == "musicbrainz" else "")
+                + " — and that the track count matches: a release missing tracks "
+                "will not match even with a forced id."
+            ),
+            "output": output.strip(),
+        }
 
 
 def acceptable(best: dict | None) -> str | None:
