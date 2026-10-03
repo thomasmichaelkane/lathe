@@ -94,14 +94,14 @@ replaygain:
 scrub:
   auto: yes
 
-# Lossless formats that players cannot open become FLAC on import (#58).
+# Every lossless format beets can read becomes FLAC on import (#58, #63).
 #
-# APE, WavPack, WAV and AIFF import fine, but Navidrome streams the original
-# unless a client asks for a transcode, and browsers and Android's player
-# cannot decode APE or WavPack — so "original quality" playback of those
-# albums failed. Lossless to lossless loses nothing. Lossy files are NOT
-# touched: accepting MP3 as it arrives is the format policy, and re-encoding
-# lossy would be a generational loss.
+# APE, WavPack, ALAC, WAV and AIFF import fine, but Navidrome streams the
+# original unless a client asks for a transcode, and browsers and Android's
+# player cannot decode APE, WavPack or ALAC — so "original quality" playback
+# of those albums failed. Lossless to lossless loses nothing. Lossy files are
+# NOT touched: accepting MP3 as it arrives is the format policy, and
+# re-encoding lossy would be a generational loss.
 #
 # `auto` runs as an early import stage, on albums beets ACCEPTS: it encodes a
 # temporary FLAC and points the item at it, so the normal move files the FLAC
@@ -112,7 +112,16 @@ scrub:
 # LOAD-BEARING: `no_convert` is a NEGATED query naming exactly what converts.
 # Not never_convert_lossy_files — the plugin's own lossless list is
 # ape/flac/alac/wave/aiff, so WavPack counts as lossy there and would silently
-# never convert. Format names are mediafile's: APE, WavPack, WAVE, AIFF.
+# never convert. Format names are mediafile's: APE, WavPack, ALAC, WAVE, AIFF.
+#
+# `.m4a` is two formats: ALAC, which converts, and AAC, which is lossy and
+# must not. mediafile tells them apart by codec, so the query does too.
+#
+# Deliberately absent, though mediafile reads them: `Windows Media` (the name
+# covers lossy WMA and WMA Lossless alike), `DSD Stream File` (DSD to FLAC is
+# a resample to PCM, not a lossless repack) and `Musepack` (lossy).
+# ingest/convert-test.sh runs a real import over one track of each format
+# that matters; run it after touching this block.
 #
 # tmpdir on the library drive, not /tmp: /tmp is RAM on the Pi, and a hi-res
 # album could fill it — a failed encode just keeps the original, silently.
@@ -120,7 +129,7 @@ scrub:
 convert:
   auto: yes
   format: flac
-  no_convert: '^format::(?i)^(ape|wavpack|wave|aiff)$'
+  no_convert: '^format::(?i)^(ape|wavpack|alac|wave|aiff)$'
   delete_originals: yes
   tmpdir: /srv/staging/convert
   quiet: yes

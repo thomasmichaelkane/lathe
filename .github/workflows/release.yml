@@ -51,13 +51,16 @@ jobs:
       # install.sh runs after every deploy. beets drops a plugin it cannot load
       # and exits 0, so without this a bad pin would ship and be discovered as
       # imports that quietly stop matching. ffmpeg is installed above because
-      # the replaygain plugin refuses to load without it.
+      # the replaygain plugin refuses to load without it. Then a real import
+      # through the config's convert block: which formats become FLAC is a
+      # regex, and a wrong one fails silently in both directions.
       - name: beets
         run: |
           python -m venv "$RUNNER_TEMP/beets"
           "$RUNNER_TEMP/beets/bin/pip" install --quiet --disable-pip-version-check -r ingest/beets/requirements.txt
           PLUGINPATH="$PWD/ingest/beets/plugins" \
             ./ingest/beets-check.sh "$RUNNER_TEMP/beets/bin/beet" ingest/beets/config.yaml
+          ./ingest/convert-test.sh "$RUNNER_TEMP/beets/bin/beet" ingest/beets/config.yaml
 
       # The venv goes first on PATH so the suites that invoke `python3` get
       # mediafile; librariand-test.sh finds .venv on its own.
